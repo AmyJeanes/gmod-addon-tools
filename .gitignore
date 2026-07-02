@@ -1,0 +1,8 @@
+# This module provisions tooling into *consumers'* .tools/, never its own -
+# but ignore it defensively in case a script is ever run with the cwd here.
+.tools/
+
+# OS / editor cruft
+Thumbs.db
+.DS_Store
+*.log
