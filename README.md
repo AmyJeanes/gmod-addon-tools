@@ -63,6 +63,20 @@ Install-GmodTools -Root (Split-Path -Parent $PSScriptRoot) -Wiki
 Each consuming addon documents one setup step: clone `gmod-addon-tools` beside it
 before running the tooling.
 
+## Releases
+
+Consumers pin a **tag** (not `main`), so tooling changes reach them as a Renovate
+bump PR that runs their CI first - never silently on an unrelated build.
+
+`.github/workflows/auto-tag.yml` cuts the next patch tag automatically when the
+tooling itself changes (a push to `main` touching `src/**` or the module
+manifest). Docs / examples / CI-only changes don't release. A consumer's Renovate
+then opens a PR bumping its pinned `ref:` to the new tag; a bump that breaks the
+consumer shows up as a red PR that never merges.
+
+So the release loop is: edit `src/` -> merge to `main` -> auto-tag -> per-consumer
+Renovate PR -> consumer CI gates it.
+
 ## Status
 
 Live. Ported from TARDIS's `scripts/generate-wiki-api.ps1`, `scripts/lua-harness/*`,

@@ -1,0 +1,41 @@
+name: Auto-tag
+
+# Cut the next patch tag whenever the shared tooling itself changes (src or the
+# module manifest). Consumers pin a tag, so a new tag becomes a Renovate PR in
+# each consumer that runs their CI before the tooling change lands - rather than
+# tracking main and breaking a later unrelated build. Docs / examples / CI-only
+# changes don't touch these paths, so they don't cut a release.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'GmodAddonTools.psd1'
+      - 'GmodAddonTools.psm1'
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    name: Tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Cut next patch tag
+        run: |
+          git fetch --tags --quiet
+          latest=$(git tag -l 'v*' --sort=-v:refname | head -n1)
+          if [ -z "$latest" ]; then
+            next="v0.1.0"
+          else
+            ver=${latest#v}
+            IFS=. read -r major minor patch <<< "$ver"
+            next="v${major}.${minor}.$((patch + 1))"
+          fi
+          echo "Latest tag: ${latest:-<none>}; tagging $next"
+          git tag "$next"
+          git push origin "$next"
