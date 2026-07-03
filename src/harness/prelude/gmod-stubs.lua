@@ -54,8 +54,10 @@ end
 
 -- Harness-side capture of things the engine would normally own. Parts register
 -- as scripted entities; recording those lets a caller enumerate them (and is a
--- coverage signal that the content actually loaded).
-__HARNESS = { sents = {} }
+-- coverage signal that the content actually loaded). convars/concommands record
+-- what the addon registers at load, so a caller can diff a server vs client run
+-- to attribute each to its true realm.
+__HARNESS = { sents = {}, convars = {}, concommands = {} }
 
 -- == output =================================================================
 
@@ -137,8 +139,54 @@ local function makeConVar(default)
     return setmetatable({}, { __index = function(_, k) return methods[k] or noop end })
 end
 
-function CreateConVar(name, default) return makeConVar(default) end
-function CreateClientConVar(name, default) return makeConVar(default) end
+-- Decompose a CreateConVar flags argument (a table of FCVAR_* values, a single
+-- number, or nil) into the FCVAR_* names it sets. The name->value map is built
+-- lazily from _G because the FCVAR_* enums load after this prelude.
+local _fcvarMap
+local function fcvarNames(flags)
+    if not _fcvarMap then
+        _fcvarMap = {}
+        for k, v in pairs(_G) do
+            if type(k) == 'string' and string.sub(k, 1, 6) == 'FCVAR_' and type(v) == 'number' and v ~= 0 then
+                _fcvarMap[k] = v
+            end
+        end
+    end
+    local n = 0
+    if type(flags) == 'table' then
+        for _, f in ipairs(flags) do if type(f) == 'number' then n = bit.bor(n, f) end end
+    elseif type(flags) == 'number' then
+        n = flags
+    end
+    local names = {}
+    for name, val in pairs(_fcvarMap) do
+        if bit.band(n, val) == val then names[#names + 1] = name end
+    end
+    table.sort(names)
+    return names
+end
+
+local function recordConVar(name, default, flags, help, min, max, client)
+    __HARNESS.convars[#__HARNESS.convars + 1] = {
+        name = name, default = tostring(default), flags = flags,
+        help = help, min = min, max = max, client = client,
+    }
+end
+
+function CreateConVar(name, default, flags, helptext, min, max)
+    recordConVar(name, default, fcvarNames(flags), helptext, min, max, false)
+    return makeConVar(default)
+end
+
+-- CreateClientConVar(name, default, shouldsave=true, userdata=false, helptext, min, max):
+-- shouldsave -> FCVAR_ARCHIVE, userdata -> FCVAR_USERINFO (matches the engine).
+function CreateClientConVar(name, default, shouldsave, userdata, helptext, min, max)
+    local flags = {}
+    if shouldsave ~= false then flags[#flags + 1] = 'FCVAR_ARCHIVE' end
+    if userdata == true then flags[#flags + 1] = 'FCVAR_USERINFO' end
+    recordConVar(name, default, flags, helptext, min, max, true)
+    return makeConVar(default)
+end
 function GetConVar() return makeConVar(nil) end
 function GetConVar_Internal() return makeConVar(nil) end
 function GetConVarString() return '' end
@@ -271,7 +319,12 @@ timer = namespace({
     UnPause = noop,
 })
 
-concommand = namespace({ Add = noop, Remove = noop })
+concommand = namespace({
+    Add = function(name, func, autocomplete, helptext)
+        __HARNESS.concommands[#__HARNESS.concommands + 1] = { name = name, help = helptext }
+    end,
+    Remove = noop,
+})
 cvars = namespace({ AddChangeCallback = noop, RemoveChangeCallback = noop })
 
 -- == list (real store; spawnmenu/registry lookups depend on it) =============

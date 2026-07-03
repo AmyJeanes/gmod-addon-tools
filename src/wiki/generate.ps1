@@ -846,11 +846,87 @@ function Assert-HookTypesResolved($model) {
     throw "Hook reference has $($gaps.Count) unresolved type(s) - see the list above."
 }
 
+# --- Convar pages (Kind = 'convars') -----------------------------------------
+# A convars category renders the convars and console commands an addon registers
+# (from Get-ConVarModel - a union of a static scan and a dual-realm headless run).
+# Debug-named entries are grouped into their own subsection at the bottom.
+
+# The convar/command name, linked to its source when the static scan located it
+# (execution-only dynamic registrations have no single source line, so stay plain).
+function Render-ConVarName($e) {
+    $code = "``$($e.Name)``"
+    if ($sourceBlobBase -and $e.SourceFile) { return "[$code]($sourceBlobBase/$($e.SourceFile)#L$($e.SourceLine))" }
+    return $code
+}
+
+function Render-ConVarDefault($e) {
+    $d = if ([string]::IsNullOrEmpty([string]$e.Default)) { '_(empty)_' } else { "``$(Format-Cell ([string]$e.Default))``" }
+    if ($null -ne $e.Min -and $null -ne $e.Max) { $d += " ($($e.Min)-$($e.Max))" }
+    elseif ($null -ne $e.Min) { $d += " (min $($e.Min))" }
+    elseif ($null -ne $e.Max) { $d += " (max $($e.Max))" }
+    return $d
+}
+
+function Render-ConVarFlags($e) {
+    $f = @($e.Flags) | Sort-Object
+    if ($f.Count -eq 0) { return '-' }
+    return ($f | ForEach-Object { "``$_``" }) -join ' '
+}
+
+function Render-ConVarTable($rows) {
+    $rows = @($rows | Where-Object { $_ })
+    $sb = New-Object System.Text.StringBuilder
+    if ($rows.Count -eq 0) { [void]$sb.AppendLine('_None._'); [void]$sb.AppendLine(); return $sb.ToString() }
+    [void]$sb.AppendLine('| ConVar | Default | Flags | Realm | Description |')
+    [void]$sb.AppendLine('|-|-|-|-|-|')
+    foreach ($e in ($rows | Sort-Object Name)) {
+        $desc = if ($e.Help) { Format-Cell $e.Help } else { '-' }
+        [void]$sb.AppendLine("| $(Render-ConVarName $e) | $(Render-ConVarDefault $e) | $(Render-ConVarFlags $e) | $(Format-Realm $e.Realm) | $desc |")
+    }
+    [void]$sb.AppendLine()
+    return $sb.ToString()
+}
+
+function Render-CommandTable($rows) {
+    $rows = @($rows | Where-Object { $_ })
+    $sb = New-Object System.Text.StringBuilder
+    if ($rows.Count -eq 0) { [void]$sb.AppendLine('_None._'); [void]$sb.AppendLine(); return $sb.ToString() }
+    [void]$sb.AppendLine('| Command | Realm | Description |')
+    [void]$sb.AppendLine('|-|-|-|')
+    foreach ($e in ($rows | Sort-Object Name)) {
+        $desc = if ($e.Help) { Format-Cell $e.Help } else { '-' }
+        [void]$sb.AppendLine("| $(Render-ConVarName $e) | $(Format-Realm $e.Realm) | $desc |")
+    }
+    [void]$sb.AppendLine()
+    return $sb.ToString()
+}
+
+function Build-ConVarsBlock($cat) {
+    $convars  = @($convarModel | Where-Object { $_.Kind -eq 'convar' })
+    $commands = @($convarModel | Where-Object { $_.Kind -eq 'command' })
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine('## ConVars'); [void]$sb.AppendLine()
+    [void]$sb.Append((Render-ConVarTable ($convars | Where-Object { -not $_.IsDebug })))
+    [void]$sb.AppendLine('## Console Commands'); [void]$sb.AppendLine()
+    [void]$sb.Append((Render-CommandTable ($commands | Where-Object { -not $_.IsDebug })))
+
+    $dbgCv  = @($convars  | Where-Object { $_.IsDebug })
+    $dbgCmd = @($commands | Where-Object { $_.IsDebug })
+    if ($dbgCv.Count -or $dbgCmd.Count) {
+        [void]$sb.AppendLine('## Debug'); [void]$sb.AppendLine()
+        [void]$sb.AppendLine('_Developer-facing debug convars and commands._'); [void]$sb.AppendLine()
+        if ($dbgCv.Count)  { [void]$sb.AppendLine('### Debug convars');  [void]$sb.AppendLine(); [void]$sb.Append((Render-ConVarTable $dbgCv)) }
+        if ($dbgCmd.Count) { [void]$sb.AppendLine('### Debug commands'); [void]$sb.AppendLine(); [void]$sb.Append((Render-CommandTable $dbgCmd)) }
+    }
+    return $sb.ToString().TrimEnd()
+}
+
 # The generated table block for one category page (the intro above the markers is
-# hand-written and preserved). A hooks category renders fired hooks; every other
-# category renders its class field tables.
+# hand-written and preserved). A hooks category renders fired hooks; a convars
+# category renders registered convars/commands; every other renders class tables.
 function Build-CategoryBlock($cat) {
     if ($cat.Kind -eq 'hooks') { return Build-HooksBlock $cat }
+    if ($cat.Kind -eq 'convars') { return Build-ConVarsBlock $cat }
     $withDefault = Test-PageHasDefaults $cat
     $sb = New-Object System.Text.StringBuilder
     foreach ($n in $pageList[$cat.File]) {
@@ -859,20 +935,32 @@ function Build-CategoryBlock($cat) {
     return $sb.ToString().TrimEnd()
 }
 
-# A hooks category is always live (it has no class roots); class categories are
-# live only if they own at least one class.
-$liveCats = @($Categories | Where-Object { $_.Kind -eq 'hooks' -or $pageList[$_.File].Count -gt 0 })
+# A hooks/convars category is always live (it has no class roots); class categories
+# are live only if they own at least one class.
+$liveCats = @($Categories | Where-Object { $_.Kind -in @('hooks', 'convars') -or $pageList[$_.File].Count -gt 0 })
+
+# Source links (hooks + convars) point at the repo's github blob base, resolved once.
+$sourceBlobBase = $null
+if ($Categories | Where-Object { $_.Kind -in @('hooks', 'convars') }) {
+    $sourceBlobBase = Get-GitHubBlobBaseUrl $RepoRoot
+}
 
 # The fired-hook model, resolved once (spawns glua_ls), only if a hooks page exists.
 $hookModel = $null
-$sourceBlobBase = $null
 if ($Categories | Where-Object { $_.Kind -eq 'hooks' }) {
     Write-Host "Resolving fired hooks via glua_ls..."
     $hookModel = Get-HookModel -RepoRoot $RepoRoot
-    $sourceBlobBase = Get-GitHubBlobBaseUrl $RepoRoot
     # -Strict turns unresolved hook types into a generation failure; without it they
     # render as bare names (a visible, non-blocking prompt to type them at the source).
     if ($Strict) { Assert-HookTypesResolved $hookModel }
+}
+
+# The convar/concommand model (static scan + dual-realm headless run), only if a
+# convars page exists.
+$convarModel = $null
+if ($Categories | Where-Object { $_.Kind -eq 'convars' }) {
+    Write-Host "Resolving convars (static scan + dual-realm headless run)..."
+    $convarModel = Get-ConVarModel -RepoRoot $RepoRoot
 }
 
 # The API landing page and the sidebar share one flat list of reference pages.
