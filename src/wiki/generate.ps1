@@ -851,12 +851,14 @@ function Assert-HookTypesResolved($model) {
 # (from Get-ConVarModel - a union of a static scan and a dual-realm headless run).
 # Debug-named entries are grouped into their own subsection at the bottom.
 
-# The convar/command name, linked to its source when the static scan located it
-# (execution-only dynamic registrations have no single source line, so stay plain).
+# The convar/command name, linked to its source: exact file#Lline when the static
+# scan located it, or a file-level link (no line) for a dynamic registration the
+# execution capture only pins to the addon file whose load created it.
 function Render-ConVarName($e) {
     $code = "``$($e.Name)``"
-    if ($sourceBlobBase -and $e.SourceFile) { return "[$code]($sourceBlobBase/$($e.SourceFile)#L$($e.SourceLine))" }
-    return $code
+    if (-not ($sourceBlobBase -and $e.SourceFile)) { return $code }
+    $anchor = if ($e.SourceLine) { "#L$($e.SourceLine)" } else { '' }
+    return "[$code]($sourceBlobBase/$($e.SourceFile)$anchor)"
 }
 
 function Render-ConVarDefault($e) {

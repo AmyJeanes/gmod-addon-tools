@@ -166,10 +166,15 @@ local function fcvarNames(flags)
     return names
 end
 
+-- The harness debug.getinfo reports the file currently being included (the addon
+-- file whose load registered this), so `source` is a file-level location - enough
+-- for a source link when the static scan has no exact line (dynamic registrations).
 local function recordConVar(name, default, flags, help, min, max, client)
+    local info = debug.getinfo(2)
     __HARNESS.convars[#__HARNESS.convars + 1] = {
         name = name, default = tostring(default), flags = flags,
         help = help, min = min, max = max, client = client,
+        source = info and info.short_src,
     }
 end
 
@@ -321,7 +326,8 @@ timer = namespace({
 
 concommand = namespace({
     Add = function(name, func, autocomplete, helptext)
-        __HARNESS.concommands[#__HARNESS.concommands + 1] = { name = name, help = helptext }
+        local info = debug.getinfo(2)
+        __HARNESS.concommands[#__HARNESS.concommands + 1] = { name = name, help = helptext, source = info and info.short_src }
     end,
     Remove = noop,
 })

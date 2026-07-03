@@ -158,7 +158,8 @@ function Get-ConVarExecCapture([string]$repoRoot) {
         foreach ($e in $runs[$realm].Convars) {
             if (-not $convars.ContainsKey($e.name)) {
                 $convars[$e.name] = @{ Server = $false; Client = $false; IsClientConvar = [bool]$e.client
-                    Default = [string]$e.default; Flags = @($e.flags | Where-Object { $_ -is [string] }); Help = [string]$e.help; Min = $e.min; Max = $e.max }
+                    Default = [string]$e.default; Flags = @($e.flags | Where-Object { $_ -is [string] }); Help = [string]$e.help
+                    Min = $e.min; Max = $e.max; Source = [string]$e.source }
             }
             $convars[$e.name][$(if ($realm -eq 'server') { 'Server' } else { 'Client' })] = $true
         }
@@ -166,7 +167,7 @@ function Get-ConVarExecCapture([string]$repoRoot) {
     $commands = @{}
     foreach ($realm in @('server', 'client')) {
         foreach ($e in $runs[$realm].Commands) {
-            if (-not $commands.ContainsKey($e.name)) { $commands[$e.name] = @{ Server = $false; Client = $false; Help = [string]$e.help } }
+            if (-not $commands.ContainsKey($e.name)) { $commands[$e.name] = @{ Server = $false; Client = $false; Help = [string]$e.help; Source = [string]$e.source } }
             $commands[$e.name][$(if ($realm -eq 'server') { 'Server' } else { 'Client' })] = $true
         }
     }
@@ -181,13 +182,13 @@ function Get-ConVarExecCapture([string]$repoRoot) {
     $outC = @{}
     foreach ($n in $convars.Keys) {
         $r = $convars[$n]
-        $outC[$n] = @{ Realm = (& $diffRealm $r); Default = $r.Default; Flags = $r.Flags; Help = $r.Help; Min = $r.Min; Max = $r.Max }
+        $outC[$n] = @{ Realm = (& $diffRealm $r); Default = $r.Default; Flags = $r.Flags; Help = $r.Help; Min = $r.Min; Max = $r.Max; Source = $r.Source }
     }
     $outCmd = @{}
     foreach ($n in $commands.Keys) {
         $r = $commands[$n]
         $realm = if ($r.Server -and $r.Client) { 'shared' } elseif ($r.Server) { 'server' } else { 'client' }
-        $outCmd[$n] = @{ Realm = $realm; Help = $r.Help }
+        $outCmd[$n] = @{ Realm = $realm; Help = $r.Help; Source = $r.Source }
     }
     return @{ Available = $true; Convars = $outC; Commands = $outCmd }
 }
@@ -206,6 +207,16 @@ function Get-ConVarModel {
 
     $rows = [System.Collections.Generic.List[object]]::new()
 
+    # Prefer the static scan's exact file:line; else fall back to the execution
+    # capture's file (relative to lua/, no line - a dynamic registration has no
+    # single literal call site, only the addon file whose load created it).
+    $sourceOf = {
+        param($s, $x)
+        if ($s) { return @{ File = $s.File; Line = $s.Line } }
+        if ($x -and $x.Source -match '\.lua') { return @{ File = "lua/$($x.Source)"; Line = $null } }
+        return @{ File = $null; Line = $null }
+    }
+
     $convarNames = @($static.Convars.Keys) + @($exec.Convars.Keys) | Select-Object -Unique
     foreach ($name in $convarNames) {
         $s = $static.Convars[$name]
@@ -217,10 +228,11 @@ function Get-ConVarModel {
         $min     = if ($s -and $null -ne $s.Min) { $s.Min } elseif ($x) { $x.Min } else { $null }
         $max     = if ($s -and $null -ne $s.Max) { $s.Max } elseif ($x) { $x.Max } else { $null }
         $isDebug = ($name -match 'debug') -or ($s -and $s.IsDebug)
+        $src = & $sourceOf $s $x
         $rows.Add([pscustomobject]@{
             Kind = 'convar'; Name = $name; Realm = $realm; Default = $default; Flags = @($flags)
             Help = $help; Min = $min; Max = $max; IsDebug = [bool]$isDebug
-            SourceFile = $(if ($s) { $s.File } else { $null }); SourceLine = $(if ($s) { $s.Line } else { $null })
+            SourceFile = $src.File; SourceLine = $src.Line
         })
     }
 
@@ -231,10 +243,11 @@ function Get-ConVarModel {
         $realm   = if ($x) { $x.Realm } elseif ($s) { $s.Realm } else { 'shared' }
         $help    = if ($s -and $s.Help) { $s.Help } elseif ($x -and $x.Help) { $x.Help } else { '' }
         $isDebug = ($name -match 'debug') -or ($s -and $s.IsDebug)
+        $src = & $sourceOf $s $x
         $rows.Add([pscustomobject]@{
             Kind = 'command'; Name = $name; Realm = $realm; Default = $null; Flags = @()
             Help = $help; Min = $null; Max = $null; IsDebug = [bool]$isDebug
-            SourceFile = $(if ($s) { $s.File } else { $null }); SourceLine = $(if ($s) { $s.Line } else { $null })
+            SourceFile = $src.File; SourceLine = $src.Line
         })
     }
 
