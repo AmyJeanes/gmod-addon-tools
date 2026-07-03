@@ -14,6 +14,8 @@ function Invoke-WikiGen {
         [Parameter(Mandatory)] [string[]]    $OwnedPrefix,
         [scriptblock] $DefaultsProvider,
         [hashtable]   $IdentityFields = @{},
+        [hashtable]   $ExternalTypeLinks = @{},
+        [hashtable[]] $ExternalTypeSources = @(),
         [switch]      $Check
     )
 
@@ -48,7 +50,7 @@ function Parse-Annotations([string]$root) {
     $docCli = Resolve-DocCli
 
     # emmylua_doc_cli requires the JSON output path to end in .json (a .tmp path errors).
-    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("tardis-wiki-api-" + [guid]::NewGuid().ToString('N') + ".json")
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("gmod-addon-wiki-api-" + [guid]::NewGuid().ToString('N') + ".json")
     try {
         & $docCli $root -f json -o $tmp --exclude '**/gmod_wire_expression2/**' | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "emmylua_doc_cli failed (exit $LASTEXITCODE)." }
@@ -155,9 +157,13 @@ function Is-Documentable([string]$name) {
 }
 
 # In-scope class names referenced by a type string.
+function Get-TypeTokens([string]$type) {
+    return [regex]::Matches($type, '[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*')
+}
+
 function Get-Refs([string]$type) {
     $refs = @()
-    foreach ($m in [regex]::Matches($type, '[A-Za-z_][A-Za-z0-9_]*')) {
+    foreach ($m in (Get-TypeTokens $type)) {
         $n = $m.Value
         if ((Is-Documentable $n) -and ($refs -notcontains $n)) { $refs += $n }
     }
@@ -261,7 +267,143 @@ $GmodWiki = Build-GmodWikiMap
 
 # --- Rendering ---------------------------------------------------------------
 
-function Get-Anchor([string]$name) { return $name.ToLower() }
+function Get-Anchor([string]$name) { return ($name.ToLower() -replace '[^a-z0-9_-]', '') }
+
+function Get-GitHubWikiBaseUrl([string]$sourceRoot) {
+    $gitConfig = Join-Path $sourceRoot '.git/config'
+    if (-not (Test-Path -LiteralPath $gitConfig)) { return $null }
+    $content = Get-Content -LiteralPath $gitConfig -Raw
+    $m = [regex]::Match($content, 'url\s*=\s*(?:https://github\.com/|git@github\.com:)([^/\s]+/[^/\s]+?)(?:\.git)?\s*(?:\r?\n|$)')
+    if (-not $m.Success) { return $null }
+    return "https://github.com/$($m.Groups[1].Value)/wiki"
+}
+
+function Get-DiscoveredExternalTypeSources {
+    $luarcPath = Join-Path $RepoRoot '.luarc.json'
+    if (-not (Test-Path -LiteralPath $luarcPath)) { return @() }
+
+    $luarc = Get-Content -LiteralPath $luarcPath -Raw | ConvertFrom-Json
+    if (-not $luarc.workspace -or -not $luarc.workspace.library) { return @() }
+
+    $sources = @()
+    foreach ($lib in @($luarc.workspace.library)) {
+        if (-not ($lib -is [string])) { continue }
+        $sourcePath = if ([System.IO.Path]::IsPathRooted($lib)) { $lib } else { Join-Path $RepoRoot $lib }
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) { continue }
+        $sourceRoot = (Resolve-Path -LiteralPath $sourcePath).Path
+        $configPath = Join-Path $sourceRoot 'scripts/wiki-api.config.ps1'
+        if (-not (Test-Path -LiteralPath $configPath)) { continue }
+
+        $config = & $configPath
+        if (-not ($config -is [hashtable])) {
+            Write-Warning "Ignoring $configPath - expected it to return a hashtable."
+            continue
+        }
+        if (-not $config.ContainsKey('WikiBaseUrl')) {
+            $derived = Get-GitHubWikiBaseUrl $sourceRoot
+            if ($derived) { $config['WikiBaseUrl'] = $derived }
+        }
+        if (-not $config.ContainsKey('WikiBaseUrl')) {
+            Write-Warning "Ignoring $configPath - no WikiBaseUrl and no GitHub origin to derive one from."
+            continue
+        }
+
+        $copy = @{}
+        foreach ($key in $config.Keys) { $copy[$key] = $config[$key] }
+        $copy['Root'] = $sourceRoot
+        $sources += $copy
+    }
+    return $sources
+}
+
+function Build-ExternalTypeLinksFromSource([hashtable]$source) {
+    foreach ($required in @('Root', 'WikiBaseUrl', 'Categories', 'OwnedPrefix')) {
+        if (-not $source.ContainsKey($required)) {
+            throw "External type source is missing '$required'."
+        }
+    }
+
+    $sourceRoot = (Resolve-Path -LiteralPath ([string]$source['Root'])).Path
+    $sourceLuaRoot = Join-Path $sourceRoot 'lua'
+    if (-not (Test-Path -LiteralPath $sourceLuaRoot -PathType Container)) { return @{} }
+
+    $sourceWikiBase = ([string]$source['WikiBaseUrl']).TrimEnd('/')
+    $sourceCategories = @($source['Categories'])
+    $sourceOwnedPrefix = @($source['OwnedPrefix'])
+    $sourceParsed = Parse-Annotations $sourceLuaRoot
+    $sourceClasses = $sourceParsed.Classes
+
+    $sourceRootSet = @{}
+    foreach ($cat in $sourceCategories) {
+        foreach ($r in $cat.Roots) { $sourceRootSet[$r] = $true }
+    }
+
+    $isSourceDocumentable = {
+        param([string]$name)
+        if (-not $sourceClasses.Contains($name)) { return $false }
+        if ($sourceRootSet.ContainsKey($name)) { return $true }
+        foreach ($p in $sourceOwnedPrefix) { if ($name.StartsWith($p)) { return $true } }
+        return $false
+    }
+
+    $sourceOwner = @{}
+    $sourcePageList = @{}
+    foreach ($cat in $sourceCategories) {
+        $sourcePageList[$cat.File] = New-Object System.Collections.Generic.List[string]
+        foreach ($r in $cat.Roots) {
+            if (-not $sourceClasses.Contains($r)) { Write-Warning "External root class '$r' not found in $sourceRoot"; continue }
+            $sourceOwner[$r] = $cat.File
+            [void]$sourcePageList[$cat.File].Add($r)
+        }
+    }
+
+    foreach ($cat in $sourceCategories) {
+        $page = $cat.File
+        $queue = New-Object System.Collections.Generic.Queue[string]
+        $seen  = @{}
+        foreach ($r in $cat.Roots) {
+            if ($sourceClasses.Contains($r)) {
+                $queue.Enqueue($r)
+                $seen[$r] = $true
+            }
+        }
+
+        while ($queue.Count -gt 0) {
+            $cname = $queue.Dequeue()
+            foreach ($f in $sourceClasses[$cname].Fields) {
+                foreach ($m in (Get-TypeTokens $f.Type)) {
+                    $ref = $m.Value
+                    if (-not (& $isSourceDocumentable $ref)) { continue }
+                    if ($sourceOwner.ContainsKey($ref)) { continue }
+                    $sourceOwner[$ref] = $page
+                    [void]$sourcePageList[$page].Add($ref)
+                    if (-not $seen.ContainsKey($ref)) {
+                        $queue.Enqueue($ref)
+                        $seen[$ref] = $true
+                    }
+                }
+            }
+        }
+    }
+
+    $links = @{}
+    foreach ($name in $sourceOwner.Keys) {
+        $links[$name] = "$sourceWikiBase/$($sourceOwner[$name])#$(Get-Anchor $name)"
+    }
+    return $links
+}
+
+$ResolvedExternalTypeLinks = @{}
+foreach ($key in $ExternalTypeLinks.Keys) {
+    $ResolvedExternalTypeLinks[$key] = $ExternalTypeLinks[$key]
+}
+foreach ($source in (@($ExternalTypeSources) + @(Get-DiscoveredExternalTypeSources))) {
+    foreach ($entry in (Build-ExternalTypeLinksFromSource $source).GetEnumerator()) {
+        if (-not $ResolvedExternalTypeLinks.ContainsKey($entry.Key)) {
+            $ResolvedExternalTypeLinks[$entry.Key] = $entry.Value
+        }
+    }
+}
 
 # The anchor GitHub derives for a field's "#### `<field>` default" expansion heading
 # (backticks dropped, lowercased, spaces to hyphens), used to link the summary cell.
@@ -287,6 +429,9 @@ function Get-ClassLink([string]$name, [string]$label, [string]$thisPage) {
 function Get-TokenLink([string]$name, [string]$thisPage) {
     if ((Is-Documentable $name) -and $owner.ContainsKey($name)) {
         return Get-ClassLink $name "``$name``" $thisPage
+    }
+    if ($ResolvedExternalTypeLinks.ContainsKey($name)) {
+        return "[``$name``]($($ResolvedExternalTypeLinks[$name]))"
     }
     if ($GmodWiki.ContainsKey($name)) {
         return "[``$name``]($($GmodWiki[$name]))"
@@ -399,6 +544,9 @@ function Render-Type([string]$type, [string]$thisPage) {
     if ((Is-Documentable $stripped) -and $owner.ContainsKey($stripped)) {
         return Get-ClassLink $stripped ("``" + (Format-Cell $type) + "``") $thisPage
     }
+    if ($ResolvedExternalTypeLinks.ContainsKey($stripped)) {
+        return "[``" + (Format-Cell $type) + "``]($($ResolvedExternalTypeLinks[$stripped]))"
+    }
     if ($GmodWiki.ContainsKey($stripped)) {
         return "[``" + (Format-Cell $type) + "``]($($GmodWiki[$stripped]))"
     }
@@ -406,7 +554,7 @@ function Render-Type([string]$type, [string]$thisPage) {
     # as code spans (markdown can't put a link inside a single code span).
     $sb  = New-Object System.Text.StringBuilder
     $pos = 0
-    foreach ($m in [regex]::Matches($type, '[A-Za-z_][A-Za-z0-9_]*')) {
+    foreach ($m in (Get-TypeTokens $type)) {
         $link = Get-TokenLink $m.Value $thisPage
         if (-not $link) { continue }
         if ($m.Index -gt $pos) {
@@ -498,6 +646,11 @@ function Test-ClassHasOwnDefault($cls) {
 
 function Render-Class($cls, [string]$thisPage, [bool]$withDefault) {
     $sb = New-Object System.Text.StringBuilder
+    $anchor = Get-Anchor $cls.Name
+    if ($anchor -ne $cls.Name.ToLower()) {
+        [void]$sb.AppendLine("<a id=`"$anchor`"></a>")
+        [void]$sb.AppendLine()
+    }
     [void]$sb.AppendLine("## ``$($cls.Name)``")
     [void]$sb.AppendLine()
 
