@@ -1,10 +1,12 @@
 name: Auto-tag
 
-# Cut the next patch tag whenever the shared tooling itself changes (src or the
-# module manifest). Consumers pin a tag, so a new tag becomes a Renovate PR in
+# Cut the next tag whenever the shared tooling itself changes (src or the module
+# manifest); the bump level (major/minor/patch) is derived from the Conventional
+# Commits since the last tag - see the step below. Consumers pin a tag, so a new
+# tag becomes a Renovate PR in
 # each consumer that runs their CI before the tooling change lands - rather than
-# tracking main and breaking a later unrelated build. Docs / examples / CI-only
-# changes don't touch these paths, so they don't cut a release.
+# tracking main and breaking a later unrelated build. Docs / CI-only changes
+# don't touch these paths, so they don't cut a release.
 on:
   push:
     branches: [main]
@@ -25,17 +27,41 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Cut next patch tag
+      - name: Cut next tag
         run: |
           git fetch --tags --quiet
           latest=$(git tag -l 'v*' --sort=-v:refname | head -n1)
           if [ -z "$latest" ]; then
             next="v0.1.0"
+            echo "No existing tag; seeding $next"
           else
-            ver=${latest#v}
-            IFS=. read -r major minor patch <<< "$ver"
-            next="v${major}.${minor}.$((patch + 1))"
+            # Derive the bump from Conventional Commits since the last tag. The
+            # highest-impact commit wins:
+            #   'type!:' subject or a 'BREAKING CHANGE:' footer -> major
+            #   'feat:' / 'feat(scope):' subject                -> minor
+            #   anything else (fix:, chore:, docs:, unclear, …) -> patch
+            # Types live on the subject line only; BREAKING CHANGE is a body
+            # footer - so match each against the right part.
+            subjects=$(git log "${latest}..HEAD" --format='%s')
+            bodies=$(git log "${latest}..HEAD" --format='%B')
+            if grep -qE '^[a-zA-Z]+(\([^)]+\))?!:' <<< "$subjects" || grep -qE '^BREAKING[ -]CHANGE:' <<< "$bodies"; then
+              level=major
+            elif grep -qE '^feat(\([^)]+\))?:' <<< "$subjects"; then
+              level=minor
+            else
+              level=patch
+            fi
+            IFS=. read -r major minor patch <<< "${latest#v}"
+            case "$level" in
+              major) next="v$((major + 1)).0.0" ;;
+              minor) next="v${major}.$((minor + 1)).0" ;;
+              patch) next="v${major}.${minor}.$((patch + 1))" ;;
+            esac
+            echo "Latest tag: $latest; commits since imply a $level bump -> $next"
           fi
-          echo "Latest tag: ${latest:-<none>}; tagging $next"
+          if git rev-parse "$next" >/dev/null 2>&1; then
+            echo "Tag $next already exists; nothing to do."
+            exit 0
+          fi
           git tag "$next"
           git push origin "$next"
