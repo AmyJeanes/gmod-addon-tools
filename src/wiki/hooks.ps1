@@ -69,6 +69,11 @@ function Get-HookArgToken([string]$segText, [int]$startIdx0) {
     $mm = [regex]::Matches($segText, '[A-Za-z_][A-Za-z0-9_]*')
     if ($mm.Count -eq 0) { return @{ Display = $trim; IsLiteral = $false; HoverCol = $null } }
     $last = $mm[$mm.Count - 1]
+    # A call expression (foo(), self:Get()) - hovering the last identifier resolves the
+    # function, not its return type, so leave it unresolved rather than emit a bogus type.
+    if ($segText.Substring($last.Index + $last.Length).TrimStart().StartsWith('(')) {
+        return @{ Display = $trim; IsLiteral = $false; HoverCol = $null }
+    }
     return @{ Display = $trim; IsLiteral = $false; HoverCol = ($startIdx0 + $last.Index + 1) }
 }
 

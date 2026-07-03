@@ -802,9 +802,14 @@ function Build-HookSection([string]$title, [string]$subtitle, $rows, [string]$th
 }
 
 function Build-HooksBlock($cat) {
+    $bus = @(@($hookModel) | Where-Object { $_.System -eq 'bus' })
+    $gm  = @(@($hookModel) | Where-Object { $_.System -eq 'gmod' })
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.Append((Build-HookSection "Entity hooks" 'Listen with `ENT:AddHook(name, id, func)`.' (@($hookModel) | Where-Object System -eq 'bus') $cat.File $true))
-    [void]$sb.Append((Build-HookSection "Gamemode hooks" 'Listen with `hook.Add(name, id, func)`.' (@($hookModel) | Where-Object System -eq 'gmod') $cat.File $false))
+    # Only emit a section that has hooks - a gamemode-only addon shows no Entity section.
+    # The bus lives on ENT for most addons but SWEP for weapons - the category can override.
+    $entListen = if ($cat.EntityListen) { $cat.EntityListen } else { 'ENT:AddHook(name, id, func)' }
+    if ($bus.Count) { [void]$sb.Append((Build-HookSection "Entity hooks" "Listen with ``$entListen``." $bus $cat.File $true)) }
+    if ($gm.Count)  { [void]$sb.Append((Build-HookSection "Gamemode hooks" 'Listen with `hook.Add(name, id, func)`.' $gm $cat.File $false)) }
     return $sb.ToString().TrimEnd()
 }
 
