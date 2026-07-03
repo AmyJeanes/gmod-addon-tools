@@ -773,8 +773,9 @@ function Render-HookName($h) {
 
 # One hook section. The first column is the hook's call signature (name + args);
 # gamemode hooks are game-wide, so their table omits "Fired on".
-function Build-HookSection([string]$title, [string]$subtitle, $rows, [string]$thisPage, [bool]$showFiredOn) {
+function Build-HookSection([string]$title, [string]$subtitle, $rows, [string]$thisPage, [bool]$showFiredOn, $commonEntities) {
     $rows = @($rows)
+    $commonEntities = @($commonEntities)
     $sb = New-Object System.Text.StringBuilder
     [void]$sb.AppendLine("## $title")
     [void]$sb.AppendLine()
@@ -791,7 +792,10 @@ function Build-HookSection([string]$title, [string]$subtitle, $rows, [string]$th
         $sig = "$(Render-HookName $h)($(Render-HookArgs $h.Args $thisPage))"
         $realm = Format-Realm $h.Realm
         if ($showFiredOn) {
-            $firedOn = if (@($h.FiredOn).Count) { (@($h.FiredOn) | ForEach-Object { Render-Type $_ $thisPage }) -join ' / ' } else { '_Unknown (missing type info)_' }
+            $firedOn =
+                if ($h.IsCommon -and $commonEntities.Count) { ($commonEntities | ForEach-Object { Render-Type $_ $thisPage }) -join ' / ' }
+                elseif (@($h.FiredOn).Count) { (@($h.FiredOn) | ForEach-Object { Render-Type $_ $thisPage }) -join ' / ' }
+                else { '_Unknown (missing type info)_' }
             [void]$sb.AppendLine("| $sig | $realm | $firedOn |")
         } else {
             [void]$sb.AppendLine("| $sig | $realm |")
@@ -808,8 +812,9 @@ function Build-HooksBlock($cat) {
     # Only emit a section that has hooks - a gamemode-only addon shows no Entity section.
     # The bus lives on ENT for most addons but SWEP for weapons - the category can override.
     $entListen = if ($cat.EntityListen) { $cat.EntityListen } else { 'ENT:AddHook(name, id, func)' }
-    if ($bus.Count) { [void]$sb.Append((Build-HookSection "Entity hooks" "Listen with ``$entListen``." $bus $cat.File $true)) }
-    if ($gm.Count)  { [void]$sb.Append((Build-HookSection "Gamemode hooks" 'Listen with `hook.Add(name, id, func)`.' $gm $cat.File $false)) }
+    $commonEntities = @($cat.CommonEntities)
+    if ($bus.Count) { [void]$sb.Append((Build-HookSection "Entity hooks" "Listen with ``$entListen``." $bus $cat.File $true $commonEntities)) }
+    if ($gm.Count)  { [void]$sb.Append((Build-HookSection "Gamemode hooks" 'Listen with `hook.Add(name, id, func)`.' $gm $cat.File $false @())) }
     return $sb.ToString().TrimEnd()
 }
 

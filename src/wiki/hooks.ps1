@@ -220,6 +220,9 @@ function Get-HookModel {
             Name       = $sites[0].Name
             Realm      = Merge-HookRealm ($sites.Realm)
             FiredOn    = $recvTypes
+            # A *Common* call (CallCommonHook / CallClientCommonHook) cascades across
+            # the exterior and interior, so it runs on both regardless of the receiver.
+            IsCommon   = [bool]@($sites | Where-Object { $_.Method -match 'Common' }).Count
             Args       = $best.Args
             SourceFile = $best.File
             SourceLine = $best.Line
