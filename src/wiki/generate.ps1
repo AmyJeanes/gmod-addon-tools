@@ -16,7 +16,8 @@ function Invoke-WikiGen {
         [hashtable]   $IdentityFields = @{},
         [hashtable]   $ExternalTypeLinks = @{},
         [hashtable[]] $ExternalTypeSources = @(),
-        [switch]      $Check
+        [switch]      $Check,
+        [switch]      $Strict
     )
 
 $ErrorActionPreference = "Stop"
@@ -276,6 +277,21 @@ function Get-GitHubWikiBaseUrl([string]$sourceRoot) {
     $m = [regex]::Match($content, 'url\s*=\s*(?:https://github\.com/|git@github\.com:)([^/\s]+/[^/\s]+?)(?:\.git)?\s*(?:\r?\n|$)')
     if (-not $m.Success) { return $null }
     return "https://github.com/$($m.Groups[1].Value)/wiki"
+}
+
+# The github blob base (`.../blob/<branch>`) for the repo checked out at $sourceRoot,
+# so source locations can be linked. Branch comes from the current HEAD - the wiki
+# is regenerated on push to the default branch, so that is the ref being documented.
+function Get-GitHubBlobBaseUrl([string]$sourceRoot) {
+    $gitConfig = Join-Path $sourceRoot '.git/config'
+    $gitHead   = Join-Path $sourceRoot '.git/HEAD'
+    if (-not (Test-Path -LiteralPath $gitConfig) -or -not (Test-Path -LiteralPath $gitHead)) { return $null }
+    $content = Get-Content -LiteralPath $gitConfig -Raw
+    $m = [regex]::Match($content, 'url\s*=\s*(?:https://github\.com/|git@github\.com:)([^/\s]+/[^/\s]+?)(?:\.git)?\s*(?:\r?\n|$)')
+    if (-not $m.Success) { return $null }
+    $head = (Get-Content -LiteralPath $gitHead -Raw).Trim()
+    $branch = if ($head -match 'ref:\s*refs/heads/(.+)$') { $Matches[1].Trim() } else { 'HEAD' }
+    return "https://github.com/$($m.Groups[1].Value)/blob/$branch"
 }
 
 function Get-DiscoveredExternalTypeSources {
@@ -722,9 +738,109 @@ function Test-PageHasDefaults($cat) {
     return $false
 }
 
-# The generated table block for one category page (classes only - the intro above
-# the markers is hand-written and preserved).
+# --- Hook pages (Kind = 'hooks') ---------------------------------------------
+# A hooks category renders the hooks the addon fires (from Get-HookModel) instead
+# of class field tables. Receiver and argument types are linked through the same
+# Render-Type used for class fields, so an owned entity/struct links to its wiki
+# page and a GMod built-in links to the facepunch reference.
+
+# The argument list inside a hook's signature - `name`: type, comma-separated. The
+# colon binds a linked type to its argument so it never reads as a separate argument.
+# Literals and untyped values show just the value/name; returns '' when there are none.
+function Render-HookArgs($hookArgs, [string]$thisPage) {
+    $list = @($hookArgs)
+    if ($list.Count -eq 0) { return '' }
+    $parts = foreach ($a in $list) {
+        $disp = '`' + (Format-Cell $a.Display) + '`'
+        if ($a.IsLiteral) { $disp }                                                          # value speaks for itself
+        elseif (Test-HookTypeResolved $a.Type) { "${disp}: $(Render-Type $a.Type $thisPage)" }
+        else { "${disp}: _unknown_" }                                                        # untyped at source - type it later
+    }
+    return ($parts -join ', ')
+}
+
+function Format-Realm([string]$realm) {
+    return (($realm -split '/') | ForEach-Object { $_.Substring(0, 1).ToUpper() + $_.Substring(1) }) -join '/'
+}
+
+# The hook name, linked to the source of its fired site when the repo's github
+# blob base is known.
+function Render-HookName($h) {
+    $code = "``$($h.Name)``"
+    if ($sourceBlobBase -and $h.SourceFile) { return "[$code]($sourceBlobBase/$($h.SourceFile)#L$($h.SourceLine))" }
+    return $code
+}
+
+# One hook section. The first column is the hook's call signature (name + args);
+# gamemode hooks are game-wide, so their table omits "Fired on".
+function Build-HookSection([string]$title, [string]$subtitle, $rows, [string]$thisPage, [bool]$showFiredOn) {
+    $rows = @($rows)
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine("## $title")
+    [void]$sb.AppendLine()
+    if ($subtitle) { [void]$sb.AppendLine($subtitle); [void]$sb.AppendLine() }
+    if ($rows.Count -eq 0) { [void]$sb.AppendLine("_None._"); [void]$sb.AppendLine(); return $sb.ToString() }
+    if ($showFiredOn) {
+        [void]$sb.AppendLine("| Hook | Realm | Fired on |")
+        [void]$sb.AppendLine("|-|-|-|")
+    } else {
+        [void]$sb.AppendLine("| Hook | Realm |")
+        [void]$sb.AppendLine("|-|-|")
+    }
+    foreach ($h in ($rows | Sort-Object Name)) {
+        $sig = "$(Render-HookName $h)($(Render-HookArgs $h.Args $thisPage))"
+        $realm = Format-Realm $h.Realm
+        if ($showFiredOn) {
+            $firedOn = if (@($h.FiredOn).Count) { (@($h.FiredOn) | ForEach-Object { Render-Type $_ $thisPage }) -join ' / ' } else { '_Unknown (missing type info)_' }
+            [void]$sb.AppendLine("| $sig | $realm | $firedOn |")
+        } else {
+            [void]$sb.AppendLine("| $sig | $realm |")
+        }
+    }
+    [void]$sb.AppendLine()
+    return $sb.ToString()
+}
+
+function Build-HooksBlock($cat) {
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append((Build-HookSection "Entity hooks" 'Listen with `ENT:AddHook(name, id, func)`.' (@($hookModel) | Where-Object System -eq 'bus') $cat.File $true))
+    [void]$sb.Append((Build-HookSection "Gamemode hooks" 'Listen with `hook.Add(name, id, func)`.' (@($hookModel) | Where-Object System -eq 'gmod') $cat.File $false))
+    return $sb.ToString().TrimEnd()
+}
+
+# Hard gate: every fired hook must resolve a receiver (bus hooks) and a type for
+# each non-literal argument. A genuinely dynamic value is annotated `---@param x any`
+# (which hovers as exactly `any`) and accepted; anything still unresolved (`any?`,
+# `unknown`, or nothing) fails generation, so the gap gets typed at the source
+# rather than silently shipping an untyped entry.
+function Assert-HookTypesResolved($model) {
+    $gaps = [System.Collections.Generic.List[object]]::new()
+    foreach ($h in @($model)) {
+        $loc = "$($h.SourceFile):$($h.SourceLine)"
+        if ($h.System -eq 'bus' -and @($h.FiredOn).Count -eq 0) {
+            $gaps.Add([pscustomobject]@{ Name = $h.Name; Loc = $loc; Detail = 'receiver type unresolved' })
+        }
+        foreach ($a in @($h.Args)) {
+            if ($a.IsLiteral -or (Test-HookTypeResolved $a.Type) -or ($a.Type -eq 'any')) { continue }
+            $what = if ($a.Type) { "'$($a.Type)'" } else { 'no type' }
+            $gaps.Add([pscustomobject]@{ Name = $h.Name; Loc = $loc; Detail = "argument '$($a.Display)' is $what" })
+        }
+    }
+    if ($gaps.Count -eq 0) { return }
+    Write-Host ""
+    Write-Host "Hook reference blocked: $($gaps.Count) unresolved type(s)." -ForegroundColor Red
+    Write-Host "Type each at the source, or mark a genuinely dynamic value with ---@param x any:"
+    $locWidth = ($gaps | ForEach-Object { $_.Loc.Length } | Measure-Object -Maximum).Maximum
+    foreach ($g in $gaps) { Write-Host ("  {0,-34}{1}  {2}" -f $g.Name, $g.Loc.PadRight($locWidth), $g.Detail) }
+    Write-Host ""
+    throw "Hook reference has $($gaps.Count) unresolved type(s) - see the list above."
+}
+
+# The generated table block for one category page (the intro above the markers is
+# hand-written and preserved). A hooks category renders fired hooks; every other
+# category renders its class field tables.
 function Build-CategoryBlock($cat) {
+    if ($cat.Kind -eq 'hooks') { return Build-HooksBlock $cat }
     $withDefault = Test-PageHasDefaults $cat
     $sb = New-Object System.Text.StringBuilder
     foreach ($n in $pageList[$cat.File]) {
@@ -733,7 +849,21 @@ function Build-CategoryBlock($cat) {
     return $sb.ToString().TrimEnd()
 }
 
-$liveCats = @($Categories | Where-Object { $pageList[$_.File].Count -gt 0 })
+# A hooks category is always live (it has no class roots); class categories are
+# live only if they own at least one class.
+$liveCats = @($Categories | Where-Object { $_.Kind -eq 'hooks' -or $pageList[$_.File].Count -gt 0 })
+
+# The fired-hook model, resolved once (spawns glua_ls), only if a hooks page exists.
+$hookModel = $null
+$sourceBlobBase = $null
+if ($Categories | Where-Object { $_.Kind -eq 'hooks' }) {
+    Write-Host "Resolving fired hooks via glua_ls..."
+    $hookModel = Get-HookModel -RepoRoot $RepoRoot
+    $sourceBlobBase = Get-GitHubBlobBaseUrl $RepoRoot
+    # -Strict turns unresolved hook types into a generation failure; without it they
+    # render as bare names (a visible, non-blocking prompt to type them at the source).
+    if ($Strict) { Assert-HookTypesResolved $hookModel }
+}
 
 # The API landing page and the sidebar share one flat list of reference pages.
 $listSb = New-Object System.Text.StringBuilder

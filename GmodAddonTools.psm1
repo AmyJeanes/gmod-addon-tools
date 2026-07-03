@@ -12,6 +12,8 @@
 
 . "$PSScriptRoot/src/install.ps1"
 . "$PSScriptRoot/src/harness/harness.ps1"
+. "$PSScriptRoot/src/lsp/lsp-client.ps1"
+. "$PSScriptRoot/src/wiki/hooks.ps1"
 . "$PSScriptRoot/src/wiki/generate.ps1"
 
 Export-ModuleMember -Function @(
