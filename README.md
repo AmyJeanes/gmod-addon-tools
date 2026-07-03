@@ -27,6 +27,7 @@ The addon-specific surface is small (for TARDIS it was ~5 things):
 | --- | --- |
 | Which pages exist + their root classes | `-Categories` |
 | Which type names are "ours" to document | `-OwnedPrefix` (e.g. `tardis_`, `Door`, `wp.`) |
+| Links to types owned by another addon's wiki | Auto-discovered from `.luarc.json` libraries that have `scripts/wiki-api.config.ps1`; `-ExternalTypeLinks` for overrides |
 | How to extract base defaults (optional) | `-DefaultsProvider` scriptblock |
 | Identity fields excluded from defaults (optional) | `-IdentityFields` |
 | Where the wiki clone / lua root live | `-WikiPath` / `-Root` |
@@ -48,17 +49,22 @@ publish, no submodule, no vendored copy. It is consumed **as a sibling clone**:
   this addon") instead of an opaque `Import-Module` error. It never auto-clones -
   setup stays an explicit, documented step.
 
-The guard + import is one shared `bootstrap.ps1` per consumer (see
-`examples/tardis/bootstrap.ps1`), so the real entry scripts stay tiny:
+The guard + import is one shared `bootstrap.ps1` per consumer (see Doors'
+`scripts/bootstrap.ps1`), so the real entry scripts stay tiny:
 
 ```powershell
 # scripts/install-tools.ps1
-. "$PSScriptRoot/_bootstrap.ps1"
+. "$PSScriptRoot/bootstrap.ps1"
 Install-GmodTools -Root (Split-Path -Parent $PSScriptRoot) -Wiki
 ```
 
-`scripts/generate-wiki-api.ps1` is the config block in
-`examples/tardis/generate-wiki-api.ps1` - see there for the full shape.
+`scripts/generate-wiki-api.ps1` is a thin config block - see a real consumer
+like Doors (`scripts/generate-wiki-api.ps1` + `scripts/wiki-api.config.ps1`) for
+the full shape. Addons that generate a wiki should also expose the
+category/prefix portion as
+`scripts/wiki-api.config.ps1`; other addons can then discover and link those
+types automatically through their existing `.luarc.json` `workspace.library`
+entries.
 
 Each consuming addon documents one setup step: clone `gmod-addon-tools` beside it
 before running the tooling.
@@ -70,7 +76,7 @@ bump PR that runs their CI first - never silently on an unrelated build.
 
 `.github/workflows/auto-tag.yml` cuts the next patch tag automatically when the
 tooling itself changes (a push to `main` touching `src/**` or the module
-manifest). Docs / examples / CI-only changes don't release. A consumer's Renovate
+manifest). Docs / CI-only changes don't release. A consumer's Renovate
 then opens a PR bumping its pinned `ref:` to the new tag; a bump that breaks the
 consumer shows up as a red PR that never merges.
 
@@ -81,6 +87,7 @@ Renovate PR -> consumer CI gates it.
 
 Live. Ported from TARDIS's `scripts/generate-wiki-api.ps1`, `scripts/lua-harness/*`,
 and `scripts/install-tools.ps1`; verified by the generated wiki output staying
-byte-identical. TARDIS is consumer #1. [docs/PORT-PLAN.md](docs/PORT-PLAN.md)
-records the extraction map, and `examples/tardis/` is the consumer template other
-addons follow to onboard.
+byte-identical. **Doors** is the reference consumer - copy its `scripts/`
+(`bootstrap.ps1`, `install-tools.ps1`, `generate-wiki-api.ps1`,
+`wiki-api.config.ps1`) and `.github/workflows/generate-wiki.yml` to onboard a
+new addon.
