@@ -202,7 +202,7 @@ function New-InjectedScanTree($injections) {
 $parsed  = Parse-Annotations $LuaRoot
 $classes = $parsed.Classes
 
-$injections = @($Categories | Where-Object { $_.Kind -eq 'functions' -and $_.Source } |
+$injections = @($Categories | Where-Object { $_.Source -and $_.Class } |
     ForEach-Object { @{ Source = $_.Source; Class = $_.Class; Global = $_.Global } })
 if ($injections.Count) {
     $injectTree = New-InjectedScanTree $injections
@@ -1220,17 +1220,22 @@ function Render-NetVarName($nv) {
 # A functions page renders the class's ---@api methods, and (when the category opts in
 # with NetworkVars=$true) a table of the entity's networked properties and their
 # generated Get/Set accessors - the public interface of entities driven by NetworkVars
-# rather than tagged methods. Section headings appear only when both are present.
-function Build-FunctionsBlock($cat) {
+# rather than tagged methods. -Combined appends these below a Roots field table (one
+# page per entity), so the Methods heading is forced; standalone it appears only when
+# netvars share the page. Combined returns '' (not '_None._') when there's nothing.
+function Build-FunctionsBlock($cat, [switch]$Combined) {
     $cls = $classes[$cat.Class]
     $fns = if ($cls) { @($cls.Functions | Where-Object { $_.IsApi } | Sort-Object Name) } else { @() }
     $netvars = if ($cat.NetworkVars -and $cat.Source) { @(Get-NetworkVarModel -RepoRoot $RepoRoot -Source $cat.Source | Sort-Object Name) } else { @() }
     $sb = New-Object System.Text.StringBuilder
 
-    if ($fns.Count -eq 0 -and $netvars.Count -eq 0) { [void]$sb.AppendLine('_None._'); return $sb.ToString().TrimEnd() }
+    if ($fns.Count -eq 0 -and $netvars.Count -eq 0) {
+        if ($Combined) { return '' }
+        [void]$sb.AppendLine('_None._'); return $sb.ToString().TrimEnd()
+    }
 
     if ($fns.Count) {
-        if ($netvars.Count) { [void]$sb.AppendLine('## Methods'); [void]$sb.AppendLine() }
+        if ($Combined -or $netvars.Count) { [void]$sb.AppendLine('## Methods'); [void]$sb.AppendLine() }
         [void]$sb.AppendLine('| Function | Description |')
         [void]$sb.AppendLine('|-|-|')
         foreach ($fn in $fns) {
@@ -1265,6 +1270,9 @@ function Build-CategoryBlock($cat) {
     foreach ($n in $pageList[$cat.File]) {
         [void]$sb.Append((Render-Class $classes[$n] $cat.File $withDefault))
     }
+    # A class-field (Roots) page that also names an entity Class carries that entity's
+    # methods/netvars below its fields - one unified page per entity.
+    if ($cat.Class) { [void]$sb.Append((Build-FunctionsBlock $cat -Combined)) }
     return $sb.ToString().TrimEnd()
 }
 
@@ -1278,9 +1286,10 @@ $liveCats = @($Categories | Where-Object {
     $pageList[$_.File].Count -gt 0
 })
 
-# Source links (every registry page) point at the repo's github blob base, resolved once.
+# Source links (registry pages + combined entity pages) point at the repo's github
+# blob base, resolved once.
 $sourceBlobBase = $null
-if ($Categories | Where-Object { $_.Kind -in $registryKinds }) {
+if ($Categories | Where-Object { ($_.Kind -in $registryKinds) -or $_.Source }) {
     $sourceBlobBase = Get-GitHubBlobBaseUrl $RepoRoot
 }
 
@@ -1366,6 +1375,21 @@ if (-not (Test-Path $WikiPath)) {
 foreach ($t in $targets) {
     $status = Update-MarkedFile $t.Path $t.Block $t.Title
     Write-Host ("  {0,-9} {1}" -f $status, (Split-Path -Leaf $t.Path))
+}
+
+# Remove orphaned generated pages: a wiki .md carrying our generated marker that no
+# category produces any more (a category was renamed or removed). Hand-written pages
+# have no marker, so they are never touched. The CI wiki commit is `git add -A`, so a
+# deletion here propagates.
+$managed = @{}
+foreach ($t in $targets) { $managed[(Split-Path -Leaf $t.Path)] = $true }
+foreach ($md in (Get-ChildItem -LiteralPath $WikiPath -Filter *.md -File)) {
+    if ($managed.ContainsKey($md.Name)) { continue }
+    $body = Get-Content -LiteralPath $md.FullName -Raw
+    if ($body -and $body.Contains($BeginMarker)) {
+        if (-not $Check) { Remove-Item -LiteralPath $md.FullName -Force }
+        Write-Host ("  {0,-9} {1}" -f 'removed', $md.Name)
+    }
 }
 
 }   # end function Invoke-WikiGen
