@@ -172,13 +172,22 @@ function Get-FieldDefault([hashtable]$map, [string]$class, [string]$field) {
 # copy emmylua reads; real source is never touched, and no `self`-typing diagnostics
 # land on the method bodies. A rel-path -> injected-line-count map keeps source links
 # pointing at the real (un-injected) line.
+# The runtime global an entity/weapon's methods are defined on - SWEP under a
+# lua/weapons source, ENT otherwise - inferred from the Source path. A Global on the
+# category overrides (for the rare addon that doesn't follow the folder convention).
+function Get-EntityGlobal([string]$source, [string]$override) {
+    if ($override) { return $override }
+    if ($source -match '(^|[\\/])weapons([\\/]|$)') { return 'SWEP' }
+    return 'ENT'
+}
+
 function New-InjectedScanTree($injections) {
     $tempRepo = Join-Path ([System.IO.Path]::GetTempPath()) ("gmod-addon-wiki-inject-" + [guid]::NewGuid().ToString('N'))
     $tempLua  = Join-Path $tempRepo 'lua'
     Copy-Item -LiteralPath $LuaRoot -Destination $tempLua -Recurse -Force
     $lineOffsets = @{}
     foreach ($inj in $injections) {
-        $global      = if ($inj.Global) { $inj.Global } else { 'ENT' }
+        $global      = Get-EntityGlobal $inj.Source $inj.Global
         $header      = "---@class $($inj.Class)`nlocal $global = $global`n"
         $headerLines = @([regex]::Matches($header, "`n")).Count
         $srcDir = Join-Path $tempRepo $inj.Source
@@ -1179,25 +1188,33 @@ function Render-FunctionArgs($params, [string]$thisPage) {
     return ($parts -join ', ')
 }
 
-# emmylua infers a return type from the body even with no ---@return; the early-exit
-# idiom `return x and f()` / `return x or y` yields a boolean-literal type (`false?`,
-# `true`, `true|false`) that no author hand-annotates (they'd write `boolean`). A return
-# composed solely of boolean literals and nil is that inferred noise - hide it, so a
-# void/callback function reads as a bare signature. A real type in the union (e.g.
-# `Entity|false`) is kept whole.
-function Test-InferredBooleanReturn([string]$type) {
+# emmylua infers a return type from the body even with no ---@return; the guess is
+# noise when it's a union of literals (the `return x and f()` / `return 0.25` idioms
+# yield `false?`, `(0.25|1)?`, ...) or is partially unresolved (contains `unknown`/
+# `any`). No author hand-annotates those - they'd write `boolean`/`number`. Hide such
+# returns so a void/inferred function reads as a bare signature; a real named type keeps
+# its arrow, and a union carrying one real type (e.g. `Entity|false`) is kept.
+function Test-InferredNoiseReturn([string]$type) {
     $parts = @(($type.TrimEnd('?') -split '\|') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     if ($parts.Count -eq 0) { return $false }
-    foreach ($p in $parts) { if ($p -notin @('true', 'false', 'nil')) { return $false } }
+    # Any unresolved component taints the whole inferred return.
+    foreach ($p in $parts) { if ($p -eq 'unknown' -or $p -eq 'any') { return $true } }
+    # Otherwise noise only when EVERY component is a literal (bool / number / string / nil).
+    foreach ($p in $parts) {
+        if ($p -in @('true', 'false', 'nil')) { continue }
+        if ($p -match '^-?[0-9]') { continue }
+        if ($p -match '^["'']') { continue }
+        return $false
+    }
     return $true
 }
 
 # Only show a return arrow for a resolved return type. emmylua infers a return from
 # the body even when there's no ---@return (so a void-ish function would otherwise
 # read `-> _unknown_`); an author surfaces a real return by annotating ---@return.
-# Inferred boolean-literal noise (see Test-InferredBooleanReturn) is dropped too.
+# Inferred literal/unresolved noise (see Test-InferredNoiseReturn) is dropped too.
 function Render-FunctionReturn($returns, [string]$thisPage) {
-    $list = @($returns | Where-Object { (Test-HookTypeResolved $_) -and (-not (Test-InferredBooleanReturn $_)) })
+    $list = @($returns | Where-Object { (Test-HookTypeResolved $_) -and (-not (Test-InferredNoiseReturn $_)) })
     if ($list.Count -eq 0) { return '' }
     return ' -> ' + ((@($list) | ForEach-Object { Render-Type $_ $thisPage }) -join ', ')
 }
@@ -1227,6 +1244,10 @@ function Build-FunctionsBlock($cat, [switch]$Combined) {
     $cls = $classes[$cat.Class]
     $fns = if ($cls) { @($cls.Functions | Where-Object { $_.IsApi } | Sort-Object Name) } else { @() }
     $netvars = if ($cat.NetworkVars -and $cat.Source) { @(Get-NetworkVarModel -RepoRoot $RepoRoot -Source $cat.Source | Sort-Object Name) } else { @() }
+    # An entity/weapon page (has a Source) names its methods by the runtime global
+    # they're defined on - `ENT:` or `SWEP:` (inferred from the Source path) - since the
+    # page heading already gives the class; a namespace page keeps its name (`TARDIS:`).
+    $namePrefix = if ($cat.Source) { Get-EntityGlobal $cat.Source $cat.Global } else { $cat.Class }
     $sb = New-Object System.Text.StringBuilder
 
     if ($fns.Count -eq 0 -and $netvars.Count -eq 0) {
@@ -1239,7 +1260,7 @@ function Build-FunctionsBlock($cat, [switch]$Combined) {
         [void]$sb.AppendLine('| Function | Description |')
         [void]$sb.AppendLine('|-|-|')
         foreach ($fn in $fns) {
-            $sig = "$(Render-FunctionName $cat.Class $fn $cat.File)($(Render-FunctionArgs $fn.Params $cat.File))$(Render-FunctionReturn $fn.Returns $cat.File)"
+            $sig = "$(Render-FunctionName $namePrefix $fn $cat.File)($(Render-FunctionArgs $fn.Params $cat.File))$(Render-FunctionReturn $fn.Returns $cat.File)"
             $desc = if ($fn.Desc) { Format-Cell $fn.Desc } else { '-' }
             [void]$sb.AppendLine("| $sig | $desc |")
         }
