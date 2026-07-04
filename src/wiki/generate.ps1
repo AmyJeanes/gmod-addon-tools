@@ -923,12 +923,168 @@ function Build-ConVarsBlock($cat) {
     return $sb.ToString().TrimEnd()
 }
 
+# --- Catalogue pages (Kind = 'catalogue') ------------------------------------
+# A catalogue lists an addon's actual registered instances (from Get-CatalogueRows),
+# grouped and columned entirely from the category config - the module holds no
+# per-addon knowledge. Labels/descriptions come from the addon's en.json via a
+# config-supplied key template; the entry name links to its exact source line.
+
+# The field-name placeholders in a "{a}.{b}" key template.
+function Get-CatTemplateFields([string]$tmpl) {
+    if (-not $tmpl) { return @() }
+    return @([regex]::Matches($tmpl, '\{(\w+)\}') | ForEach-Object { $_.Groups[1].Value })
+}
+
+# Resolve a key template against a row's fields; empty placeholders collapse, so an
+# absent optional segment (a setting with no subsection) yields a clean, dotless key.
+function Resolve-CatTemplate([string]$tmpl, $fields) {
+    $out = [regex]::Replace($tmpl, '\{(\w+)\}', { param($m) [string]$fields[$m.Groups[1].Value] })
+    return ($out -replace '\.\.+', '.').Trim('.')
+}
+
+function Get-CatLabel($cat, $row) {
+    $key = Resolve-CatTemplate $cat.Labels.Key $row.Fields
+    if ($catI18n.ContainsKey($key)) { return $catI18n[$key] }
+    return [string]$row.Fields[$cat.Labels.Fallback]
+}
+function Get-CatDescription($cat, $row) {
+    $key = (Resolve-CatTemplate $cat.Labels.Key $row.Fields) + '.Description'
+    if ($catI18n.ContainsKey($key)) { return $catI18n[$key] }
+    return $null
+}
+
+# The entry label, linked to its exact source line.
+function Render-CatEntryName([string]$label, $row) {
+    $label = Format-Cell $label
+    if (-not ($sourceBlobBase -and $row.SourceFile)) { return $label }
+    $anchor = if ($row.SourceLine) { "#L$($row.SourceLine)" } else { '' }
+    return "[$label]($sourceBlobBase/$($row.SourceFile)$anchor)"
+}
+
+# A group heading: the i18n phrase for the group's LabelKey if it has one, else the
+# raw group value (top-level sections read fine as-is; subsections get a nicer name).
+function Get-CatGroupHeading($group, $row) {
+    if ($group.LabelKey) {
+        $key = Resolve-CatTemplate $group.LabelKey $row.Fields
+        if ($catI18n.ContainsKey($key)) { return $catI18n[$key] }
+    }
+    return [string]$row.Fields[$group.By]
+}
+
+# One column's cell for a row. A plain field is optionally value-mapped, key-named,
+# linked to another page, or range-suffixed; Desc pulls the i18n description; RunsOn
+# joins boolean flags with an optional realm suffix.
+function Render-CatCell($cat, $col, $row) {
+    if ($col.Desc) { $d = Get-CatDescription $cat $row; return $(if ($d) { Format-Cell $d } else { '-' }) }
+    if ($col.RunsOn) {
+        $on = foreach ($f in ($col.RunsOn -split ',')) { if ($row.Fields[$f] -eq 'true') { $f } }
+        $realm = ''
+        if ($col.Realm) { foreach ($k in $col.Realm.Keys) { if ($row.Fields[$k] -eq 'true') { $realm = " ($($col.Realm[$k]))" } } }
+        $s = ((@($on) -join ', ') + $realm).Trim()
+        return $(if ($s) { $s } else { '-' })
+    }
+    $v = [string]$row.Fields[$col.F]
+    if ([string]::IsNullOrEmpty($v)) { return '-' }
+    if ($col.Map) { return $(if ($col.Map.ContainsKey($v)) { $col.Map[$v] } else { $v }) }
+    if ($col.KeyName) { $v = Get-CatKeyName $catKeyMap $v }
+    if ($col.Link) { return "[``$v``]($($col.Link))" }
+    # Code-span value-like cells (a default, a key); leave label-like cells (a type
+    # name) plain.
+    $cell = if ($col.Code) { "``$(Format-Cell $v)``" } else { Format-Cell $v }
+    if ($col.Range) {
+        $rp = $col.Range -split ','
+        $mn = $row.Fields[$rp[0]]; $mx = $row.Fields[$rp[1]]
+        if ($null -ne $mn -and $null -ne $mx) { $cell += " ($mn-$mx)" }
+    }
+    return $cell
+}
+
+# One catalogue table. A column flagged SkipEmptyColumn is dropped when no row in
+# this table has a value for it, so e.g. a convar column isn't all dashes on the
+# client-only sections.
+function Render-CatTable($cat, $rows) {
+    $rows = @($rows | Where-Object { $_ })
+    if ($rows.Count -eq 0) { return '' }
+    $cols = [System.Collections.Generic.List[object]]::new()
+    foreach ($c in @($cat.Columns)) {
+        if ($c.SkipEmptyColumn -and $c.F) {
+            $has = $false
+            foreach ($r in $rows) { if (-not [string]::IsNullOrEmpty([string]$r.Fields[$c.F])) { $has = $true; break } }
+            if (-not $has) { continue }
+        }
+        $cols.Add($c)
+    }
+    $headers = @($cat.NameHeader) + @($cols | ForEach-Object { $_.H })
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine('| ' + ($headers -join ' | ') + ' |')
+    [void]$sb.AppendLine('|' + ('-|' * $headers.Count))
+    foreach ($row in ($rows | Sort-Object Id)) {
+        $cells = @(Render-CatEntryName (Get-CatLabel $cat $row) $row) + @($cols | ForEach-Object { Render-CatCell $cat $_ $row })
+        [void]$sb.AppendLine('| ' + ($cells -join ' | ') + ' |')
+    }
+    [void]$sb.AppendLine()
+    return $sb.ToString()
+}
+
+# The fields the config needs pulled from each registration (dedup, order-preserving).
+function Get-CatNeededFields($cat) {
+    $need = [System.Collections.Generic.List[string]]::new()
+    $add = { param($x) if ($x -and -not $need.Contains($x)) { [void]$need.Add($x) } }
+    # A table-shaped registration takes its id from a field (so rows can sort by it);
+    # an id-table one takes it from the first argument, needing no field.
+    if ($cat.Arg -ne 'id-table') { & $add $(if ($cat.Id) { $cat.Id } else { 'id' }) }
+    foreach ($f in (Get-CatTemplateFields $cat.Labels.Key)) { & $add $f }
+    & $add $cat.Labels.Fallback
+    foreach ($g in @($cat.Group)) { & $add $g.By; foreach ($f in (Get-CatTemplateFields $g.LabelKey)) { & $add $f } }
+    if ($cat.Where) { & $add $cat.Where.Field }
+    foreach ($c in @($cat.Columns)) {
+        & $add $c.F
+        if ($c.Range) { foreach ($r in ($c.Range -split ',')) { & $add $r } }
+        if ($c.RunsOn) { foreach ($r in ($c.RunsOn -split ',')) { & $add $r } }
+        if ($c.Realm) { foreach ($k in $c.Realm.Keys) { & $add $k } }
+    }
+    return @($need)
+}
+
+# Render a catalogue category: scan its registrations, filter, group (0-2 levels,
+# level-1 rows shown before their subsections), and render each group as a table.
+function Build-CatalogueBlock($cat) {
+    $rows = Get-CatalogueRows -RepoRoot $RepoRoot -Register $cat.Register `
+        -Arg $(if ($cat.Arg) { $cat.Arg } else { 'table' }) `
+        -IdField $(if ($cat.Id) { $cat.Id } else { 'id' }) -Fields (Get-CatNeededFields $cat)
+    if ($cat.Where) { $rows = @($rows | Where-Object { [string]$_.Fields[$cat.Where.Field] -eq $cat.Where.Equals }) }
+
+    $groups = @($cat.Group)
+    $sb = New-Object System.Text.StringBuilder
+    if ($groups.Count -eq 0) {
+        [void]$sb.Append((Render-CatTable $cat $rows))
+        return $sb.ToString().TrimEnd()
+    }
+    $l0 = $groups[0].By
+    foreach ($sec in ($rows | Group-Object { [string]$_.Fields[$l0] } | Sort-Object Name)) {
+        [void]$sb.AppendLine("## $(Get-CatGroupHeading $groups[0] $sec.Group[0])"); [void]$sb.AppendLine()
+        if ($groups.Count -eq 1) {
+            [void]$sb.Append((Render-CatTable $cat $sec.Group))
+            continue
+        }
+        $l1 = $groups[1].By
+        $direct = @($sec.Group | Where-Object { -not $_.Fields[$l1] })
+        if ($direct.Count) { [void]$sb.Append((Render-CatTable $cat $direct)) }
+        foreach ($sub in ($sec.Group | Where-Object { $_.Fields[$l1] } | Group-Object { [string]$_.Fields[$l1] } | Sort-Object Name)) {
+            [void]$sb.AppendLine("### $(Get-CatGroupHeading $groups[1] $sub.Group[0])"); [void]$sb.AppendLine()
+            [void]$sb.Append((Render-CatTable $cat $sub.Group))
+        }
+    }
+    return $sb.ToString().TrimEnd()
+}
+
 # The generated table block for one category page (the intro above the markers is
-# hand-written and preserved). A hooks category renders fired hooks; a convars
-# category renders registered convars/commands; every other renders class tables.
+# hand-written and preserved). Hooks/convars/settings/keybinds categories render
+# their registered instances; every other renders class field tables.
 function Build-CategoryBlock($cat) {
     if ($cat.Kind -eq 'hooks') { return Build-HooksBlock $cat }
     if ($cat.Kind -eq 'convars') { return Build-ConVarsBlock $cat }
+    if ($cat.Kind -eq 'catalogue') { return Build-CatalogueBlock $cat }
     $withDefault = Test-PageHasDefaults $cat
     $sb = New-Object System.Text.StringBuilder
     foreach ($n in $pageList[$cat.File]) {
@@ -937,13 +1093,14 @@ function Build-CategoryBlock($cat) {
     return $sb.ToString().TrimEnd()
 }
 
-# A hooks/convars category is always live (it has no class roots); class categories
-# are live only if they own at least one class.
-$liveCats = @($Categories | Where-Object { $_.Kind -in @('hooks', 'convars') -or $pageList[$_.File].Count -gt 0 })
+# A registry category (hooks/convars/settings/keybinds) is always live (it has no
+# class roots); class categories are live only if they own at least one class.
+$registryKinds = @('hooks', 'convars', 'catalogue')
+$liveCats = @($Categories | Where-Object { $_.Kind -in $registryKinds -or $pageList[$_.File].Count -gt 0 })
 
-# Source links (hooks + convars) point at the repo's github blob base, resolved once.
+# Source links (every registry page) point at the repo's github blob base, resolved once.
 $sourceBlobBase = $null
-if ($Categories | Where-Object { $_.Kind -in @('hooks', 'convars') }) {
+if ($Categories | Where-Object { $_.Kind -in $registryKinds }) {
     $sourceBlobBase = Get-GitHubBlobBaseUrl $RepoRoot
 }
 
@@ -963,6 +1120,16 @@ $convarModel = $null
 if ($Categories | Where-Object { $_.Kind -eq 'convars' }) {
     Write-Host "Resolving convars (static scan + dual-realm headless run)..."
     $convarModel = Get-ConVarModel -RepoRoot $RepoRoot
+}
+
+# Catalogue shared inputs (the en.json label map + key-name map), resolved once if
+# any catalogue page exists. Each catalogue's rows are scanned in Build-CatalogueBlock.
+$catI18n = $null
+$catKeyMap = $null
+if ($Categories | Where-Object { $_.Kind -eq 'catalogue' }) {
+    Write-Host "Cataloguing registries..."
+    $catI18n = Get-CatI18n $RepoRoot
+    $catKeyMap = Get-CatKeyMap $RepoRoot
 }
 
 # The API landing page and the sidebar share one flat list of reference pages.
