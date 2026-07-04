@@ -71,17 +71,42 @@ function Parse-Annotations([string]$root) {
         if (-not $blurb) { $blurb = $null }
 
         $fields = @()
+        $functions = @()
         foreach ($m in $t.members) {
-            if ($m.type -ne 'field') { continue }
-            $fname = $m.name
-            $ftype = if ($m.typ) { $m.typ } else { '' }
-            # emmylua encodes optionality as a trailing '?'; index signatures ([k]) are always optional.
-            $optional = $ftype.EndsWith('?') -or $fname.StartsWith('[')
-            $desc = if ($m.description) { ($m.description -replace '\r?\n', ' ').Trim() } else { '' }
-            $fields += @{ Name = $fname; Type = $ftype; Optional = $optional; Desc = $desc }
+            if ($m.type -eq 'field') {
+                $fname = $m.name
+                $ftype = if ($m.typ) { $m.typ } else { '' }
+                # emmylua encodes optionality as a trailing '?'; index signatures ([k]) are always optional.
+                $optional = $ftype.EndsWith('?') -or $fname.StartsWith('[')
+                $desc = if ($m.description) { ($m.description -replace '\r?\n', ' ').Trim() } else { '' }
+                $fields += @{ Name = $fname; Type = $ftype; Optional = $optional; Desc = $desc }
+            }
+            elseif ($m.type -eq 'fn') {
+                # A method member. The public-API surface opts in with a ---@api doc tag,
+                # which emmylua surfaces in tag_content. Params/returns/loc come straight
+                # from the model (loc gives the exact source line).
+                $fdesc = if ($m.description) { ($m.description -replace '\r?\n', ' ').Trim() } else { '' }
+                $fparams = @()
+                foreach ($p in @($m.params)) { $fparams += @{ Name = $p.name; Type = $(if ($p.typ) { $p.typ } else { '' }) } }
+                $freturns = @()
+                foreach ($r in @($m.returns)) { $rt = if ($r -is [string]) { $r } elseif ($r.typ) { $r.typ } else { '' }; if ($rt) { $freturns += $rt } }
+                $srcRel = $null; $srcLine = $null
+                if ($m.loc -and $m.loc.file) {
+                    $abs = ($m.loc.file -replace '\\', '/')
+                    $rootFwd = ($RepoRoot -replace '\\', '/').TrimEnd('/')
+                    if ($abs.StartsWith($rootFwd, [System.StringComparison]::OrdinalIgnoreCase)) { $srcRel = $abs.Substring($rootFwd.Length).TrimStart('/') }
+                    $srcLine = $m.loc.line
+                }
+                $functions += @{
+                    Name = $m.name; IsMeth = [bool]$m.is_meth
+                    IsApi = @($m.tag_content | Where-Object { $_.tag_name -eq 'api' }).Count -gt 0
+                    Params = $fparams; Returns = $freturns; Desc = $fdesc
+                    SourceFile = $srcRel; SourceLine = $srcLine
+                }
+            }
         }
 
-        $classes[$name] = @{ Name = $name; Parent = $parent; Blurb = $blurb; Fields = $fields }
+        $classes[$name] = @{ Name = $name; Parent = $parent; Blurb = $blurb; Fields = $fields; Functions = $functions }
     }
 
     return @{ Classes = $classes }
@@ -1078,13 +1103,63 @@ function Build-CatalogueBlock($cat) {
     return $sb.ToString().TrimEnd()
 }
 
+# --- Function pages (Kind = 'functions') -------------------------------------
+# A functions category renders a namespace class's methods that opt into the public
+# API with a ---@api doc tag. The signature's params and return are type-linked
+# through the same Render-Type used for class fields; the name links to the exact
+# source line. Untyped params/returns show `_unknown_`, improving as the source gets
+# typed (same as the hooks page).
+
+function Render-FunctionArgs($params, [string]$thisPage) {
+    $list = @($params)
+    if ($list.Count -eq 0) { return '' }
+    $parts = foreach ($p in $list) {
+        $disp = '`' + (Format-Cell $p.Name) + '`'
+        if (Test-HookTypeResolved $p.Type) { "${disp}: $(Render-Type $p.Type $thisPage)" } else { "${disp}: _unknown_" }
+    }
+    return ($parts -join ', ')
+}
+
+# Only show a return arrow for a resolved return type. emmylua infers a return from
+# the body even when there's no ---@return (so a void-ish function would otherwise
+# read `-> _unknown_`); an author surfaces a real return by annotating ---@return.
+function Render-FunctionReturn($returns, [string]$thisPage) {
+    $list = @($returns | Where-Object { Test-HookTypeResolved $_ })
+    if ($list.Count -eq 0) { return '' }
+    return ' -> ' + ((@($list) | ForEach-Object { Render-Type $_ $thisPage }) -join ', ')
+}
+
+# The method name, `Class:Method` (or `Class.func`), linked to its source line.
+function Render-FunctionName([string]$className, $fn, [string]$thisPage) {
+    $sep = if ($fn.IsMeth) { ':' } else { '.' }
+    $code = "``$className$sep$($fn.Name)``"
+    if ($sourceBlobBase -and $fn.SourceFile) { return "[$code]($sourceBlobBase/$($fn.SourceFile)#L$($fn.SourceLine))" }
+    return $code
+}
+
+function Build-FunctionsBlock($cat) {
+    $cls = $classes[$cat.Class]
+    $fns = if ($cls) { @($cls.Functions | Where-Object { $_.IsApi } | Sort-Object Name) } else { @() }
+    $sb = New-Object System.Text.StringBuilder
+    if ($fns.Count -eq 0) { [void]$sb.AppendLine('_None._'); return $sb.ToString().TrimEnd() }
+    [void]$sb.AppendLine('| Function | Description |')
+    [void]$sb.AppendLine('|-|-|')
+    foreach ($fn in $fns) {
+        $sig = "$(Render-FunctionName $cat.Class $fn $cat.File)($(Render-FunctionArgs $fn.Params $cat.File))$(Render-FunctionReturn $fn.Returns $cat.File)"
+        $desc = if ($fn.Desc) { Format-Cell $fn.Desc } else { '-' }
+        [void]$sb.AppendLine("| $sig | $desc |")
+    }
+    return $sb.ToString().TrimEnd()
+}
+
 # The generated table block for one category page (the intro above the markers is
-# hand-written and preserved). Hooks/convars/settings/keybinds categories render
-# their registered instances; every other renders class field tables.
+# hand-written and preserved). Registry categories (hooks/convars/catalogue/functions)
+# render their entries; every other renders class field tables.
 function Build-CategoryBlock($cat) {
     if ($cat.Kind -eq 'hooks') { return Build-HooksBlock $cat }
     if ($cat.Kind -eq 'convars') { return Build-ConVarsBlock $cat }
     if ($cat.Kind -eq 'catalogue') { return Build-CatalogueBlock $cat }
+    if ($cat.Kind -eq 'functions') { return Build-FunctionsBlock $cat }
     $withDefault = Test-PageHasDefaults $cat
     $sb = New-Object System.Text.StringBuilder
     foreach ($n in $pageList[$cat.File]) {
@@ -1093,10 +1168,15 @@ function Build-CategoryBlock($cat) {
     return $sb.ToString().TrimEnd()
 }
 
-# A registry category (hooks/convars/settings/keybinds) is always live (it has no
-# class roots); class categories are live only if they own at least one class.
-$registryKinds = @('hooks', 'convars', 'catalogue')
-$liveCats = @($Categories | Where-Object { $_.Kind -in $registryKinds -or $pageList[$_.File].Count -gt 0 })
+# A registry category (hooks/convars/catalogue) is always live; a functions category
+# is live if its namespace class exists; class categories are live only if they own
+# at least one class.
+$registryKinds = @('hooks', 'convars', 'catalogue', 'functions')
+$liveCats = @($Categories | Where-Object {
+    ($_.Kind -in @('hooks', 'convars', 'catalogue')) -or
+    ($_.Kind -eq 'functions' -and $classes.Contains($_.Class)) -or
+    $pageList[$_.File].Count -gt 0
+})
 
 # Source links (every registry page) point at the repo's github blob base, resolved once.
 $sourceBlobBase = $null
