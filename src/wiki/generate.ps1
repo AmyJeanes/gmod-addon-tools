@@ -243,9 +243,16 @@ $defaultsFor = @{}   # className -> default subtree (a parsed-JSON object)
 $rootSet = @{}
 foreach ($cat in $Categories) { foreach ($r in $cat.Roots) { $rootSet[$r] = $true } }
 
+# Entity/weapon pages (a category with a Source) make their Class a documentable link
+# target too, so references to the entity - hook "Fired on", a function return/param, a
+# netvar type - resolve to its page even though it isn't a Roots class.
+$entityClasses = @{}
+foreach ($cat in $Categories) { if ($cat.Source -and $cat.Class) { $entityClasses[$cat.Class] = $true } }
+
 function Is-Documentable([string]$name) {
     if (-not $classes.Contains($name)) { return $false }
     if ($rootSet.ContainsKey($name)) { return $true }
+    if ($entityClasses.ContainsKey($name)) { return $true }
     foreach ($p in $OwnedPrefix) { if ($name.StartsWith($p)) { return $true } }
     return $false
 }
@@ -279,6 +286,14 @@ foreach ($cat in $Categories) {
     }
 }
 
+# Entity/weapon Class as a link target (after Roots, so a Root wins when a class is both
+# - e.g. Doors' merged pages, where the class is a Root rendered with an anchor).
+foreach ($cat in $Categories) {
+    if ($cat.Source -and $cat.Class -and $classes.Contains($cat.Class) -and -not $owner.ContainsKey($cat.Class)) {
+        $owner[$cat.Class] = $cat.File
+    }
+}
+
 foreach ($cat in $Categories) {
     $page = $cat.File
     $queue = New-Object System.Collections.Generic.Queue[string]
@@ -302,6 +317,12 @@ foreach ($cat in $Categories) {
         }
     }
 }
+
+# Classes rendered with a `## <name>` heading (Roots + the structs they reach) carry an
+# anchor; a standalone entity/weapon page's Class does not, so links to it omit the
+# fragment and a same-page self-reference is left as plain text.
+$anchoredClasses = @{}
+foreach ($file in $pageList.Keys) { foreach ($n in $pageList[$file]) { $anchoredClasses[$n] = $true } }
 
 # Reverse of the type links: for each class, the rendered classes that reference
 # it through a field (a "Used in" backlink). Built in page order for stable
@@ -523,14 +544,16 @@ function Format-Cell([string]$s) {
     return $s.Replace('|', '\|')
 }
 
-# Link a documentable class name to its section (same page -> bare anchor).
+# Link a documentable class name to its section. A Roots-rendered class has a `##`
+# anchor on its page; a standalone entity/weapon page's Class does not, so its link
+# omits the fragment, and a same-page self-reference is left as plain text.
 function Get-ClassLink([string]$name, [string]$label, [string]$thisPage) {
-    if ((Is-Documentable $name) -and $owner.ContainsKey($name)) {
-        $anchor = Get-Anchor $name
-        $target = if ($owner[$name] -eq $thisPage) { "#$anchor" } else { "$($owner[$name])#$anchor" }
-        return "[$label]($target)"
-    }
-    return $label
+    if (-not ((Is-Documentable $name) -and $owner.ContainsKey($name))) { return $label }
+    $samePage = $owner[$name] -eq $thisPage
+    $anchor   = if ($anchoredClasses.ContainsKey($name)) { '#' + (Get-Anchor $name) } else { '' }
+    if ($samePage -and -not $anchor) { return $label }
+    $target = if ($samePage) { $anchor } else { "$($owner[$name])$anchor" }
+    return "[$label]($target)"
 }
 
 # Link one type token to its wiki section (documented tardis class) or to the GMod
@@ -1272,7 +1295,14 @@ function Build-FunctionsBlock($cat, [switch]$Combined) {
         [void]$sb.AppendLine('| Variable | Type | Getter | Setter |')
         [void]$sb.AppendLine('|-|-|-|-|')
         foreach ($nv in $netvars) {
-            [void]$sb.AppendLine("| $(Render-NetVarName $nv) | $(Render-Type $nv.Type $cat.File) | ``Get$($nv.Name)()`` | ``Set$($nv.Name)(value)`` |")
+            # A hand-written `---@field Get<Name> fun(...): T` refines the accessor type
+            # past the raw NetworkVar type (e.g. wp's Exit: Entity -> linked_portal_door).
+            $nvType = $nv.Type
+            if ($cls) {
+                $getter = @($cls.Fields | Where-Object { $_.Name -eq "Get$($nv.Name)" })[0]
+                if ($getter -and $getter.Type -match '.*->\s*(.+?)\s*$') { $nvType = $Matches[1].Trim() }
+            }
+            [void]$sb.AppendLine("| $(Render-NetVarName $nv) | $(Render-Type $nvType $cat.File) | ``${namePrefix}:Get$($nv.Name)()`` | ``${namePrefix}:Set$($nv.Name)(value)`` |")
         }
     }
     return $sb.ToString().TrimEnd()
