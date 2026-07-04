@@ -47,7 +47,12 @@ function Resolve-DocCli {
 
 # Parse every annotation via emmylua_doc_cli, returning:
 #   Classes : ordered hashtable name -> @{ Name; Parent; Blurb; Fields = @(@{Name;Type;Optional;Desc}) }
-function Parse-Annotations([string]$root) {
+# $relRoot is the root that source paths are made relative to (the temp mirror when
+# scanning an injected tree); $lineOffsets maps a rel path to the number of injected
+# header lines to subtract, so a method's source link still points at the real line.
+function Parse-Annotations([string]$root, [string]$relRoot, [hashtable]$lineOffsets) {
+    if (-not $relRoot) { $relRoot = $RepoRoot }
+    if (-not $lineOffsets) { $lineOffsets = @{} }
     $docCli = Resolve-DocCli
 
     # emmylua_doc_cli requires the JSON output path to end in .json (a .tmp path errors).
@@ -93,9 +98,10 @@ function Parse-Annotations([string]$root) {
                 $srcRel = $null; $srcLine = $null
                 if ($m.loc -and $m.loc.file) {
                     $abs = ($m.loc.file -replace '\\', '/')
-                    $rootFwd = ($RepoRoot -replace '\\', '/').TrimEnd('/')
+                    $rootFwd = ($relRoot -replace '\\', '/').TrimEnd('/')
                     if ($abs.StartsWith($rootFwd, [System.StringComparison]::OrdinalIgnoreCase)) { $srcRel = $abs.Substring($rootFwd.Length).TrimStart('/') }
                     $srcLine = $m.loc.line
+                    if ($srcRel -and $srcLine -and $lineOffsets.ContainsKey($srcRel)) { $srcLine = $srcLine - $lineOffsets[$srcRel] }
                 }
                 $functions += @{
                     Name = $m.name; IsMeth = [bool]$m.is_meth
@@ -156,10 +162,63 @@ function Get-FieldDefault([hashtable]$map, [string]$class, [string]$field) {
     return @{ Has = $true; Value = $p.Value }
 }
 
+# --- Entity method typing (pre-scan injection) -------------------------------
+# GMod entity/weapon methods are defined as `function ENT:Method` where ENT is an
+# untyped shared global, so emmylua can't attach them to the entity's ---@class. A
+# functions category with a Source folder opts in: we mirror the lua tree to a temp
+# dir and prepend `---@class <Class>` + `local ENT = ENT` to every file in that folder,
+# so the folder's methods attach to that class - folder-scoped, so one entity's
+# methods never leak onto another (a single global bind does). It all happens in the
+# copy emmylua reads; real source is never touched, and no `self`-typing diagnostics
+# land on the method bodies. A rel-path -> injected-line-count map keeps source links
+# pointing at the real (un-injected) line.
+function New-InjectedScanTree($injections) {
+    $tempRepo = Join-Path ([System.IO.Path]::GetTempPath()) ("gmod-addon-wiki-inject-" + [guid]::NewGuid().ToString('N'))
+    $tempLua  = Join-Path $tempRepo 'lua'
+    Copy-Item -LiteralPath $LuaRoot -Destination $tempLua -Recurse -Force
+    $lineOffsets = @{}
+    foreach ($inj in $injections) {
+        $global      = if ($inj.Global) { $inj.Global } else { 'ENT' }
+        $header      = "---@class $($inj.Class)`nlocal $global = $global`n"
+        $headerLines = @([regex]::Matches($header, "`n")).Count
+        $srcDir = Join-Path $tempRepo $inj.Source
+        if (-not (Test-Path -LiteralPath $srcDir)) { Write-Warning "Injection source '$($inj.Source)' not found - skipped."; continue }
+        foreach ($file in (Get-ChildItem -LiteralPath $srcDir -Filter *.lua -File -Recurse)) {
+            [System.IO.File]::WriteAllText($file.FullName, $header + [System.IO.File]::ReadAllText($file.FullName))
+            $rel = (($file.FullName.Substring($tempRepo.Length)).TrimStart('\', '/') -replace '\\', '/')
+            $lineOffsets[$rel] = $headerLines
+        }
+    }
+    return @{ TempRepo = $tempRepo; ScanLuaRoot = $tempLua; RelRoot = $tempRepo; LineOffsets = $lineOffsets }
+}
+
 # --- Ownership ---------------------------------------------------------------
 
+# The clean scan is the field/class model. Entity methods (`function ENT:X`) can't
+# attach here because ENT is an untyped shared global - that needs the injected scan
+# below. Binding a class to ENT also makes emmylua infer every `ENT.x = ` / `self.x = `
+# assignment as a field, so we take only the injected scan's *methods* and keep this
+# scan's fields, leaving Roots field pages limited to the real ---@field declarations.
 $parsed  = Parse-Annotations $LuaRoot
 $classes = $parsed.Classes
+
+$injections = @($Categories | Where-Object { $_.Kind -eq 'functions' -and $_.Source } |
+    ForEach-Object { @{ Source = $_.Source; Class = $_.Class; Global = $_.Global } })
+if ($injections.Count) {
+    $injectTree = New-InjectedScanTree $injections
+    try {
+        $injected = (Parse-Annotations $injectTree.ScanLuaRoot $injectTree.RelRoot $injectTree.LineOffsets).Classes
+        foreach ($inj in $injections) {
+            if (-not $injected.Contains($inj.Class)) { continue }
+            if ($classes.Contains($inj.Class)) { $classes[$inj.Class].Functions = $injected[$inj.Class].Functions }
+            else { $classes[$inj.Class] = $injected[$inj.Class] }
+        }
+    } finally {
+        if (Test-Path -LiteralPath $injectTree.TempRepo) {
+            Remove-Item -LiteralPath $injectTree.TempRepo -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
 
 # className -> default subtree, from the caller's provider (loaded headless once).
 # No provider -> no captured defaults -> every page stays 3-column.
@@ -1120,11 +1179,25 @@ function Render-FunctionArgs($params, [string]$thisPage) {
     return ($parts -join ', ')
 }
 
+# emmylua infers a return type from the body even with no ---@return; the early-exit
+# idiom `return x and f()` / `return x or y` yields a boolean-literal type (`false?`,
+# `true`, `true|false`) that no author hand-annotates (they'd write `boolean`). A return
+# composed solely of boolean literals and nil is that inferred noise - hide it, so a
+# void/callback function reads as a bare signature. A real type in the union (e.g.
+# `Entity|false`) is kept whole.
+function Test-InferredBooleanReturn([string]$type) {
+    $parts = @(($type.TrimEnd('?') -split '\|') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($parts.Count -eq 0) { return $false }
+    foreach ($p in $parts) { if ($p -notin @('true', 'false', 'nil')) { return $false } }
+    return $true
+}
+
 # Only show a return arrow for a resolved return type. emmylua infers a return from
 # the body even when there's no ---@return (so a void-ish function would otherwise
 # read `-> _unknown_`); an author surfaces a real return by annotating ---@return.
+# Inferred boolean-literal noise (see Test-InferredBooleanReturn) is dropped too.
 function Render-FunctionReturn($returns, [string]$thisPage) {
-    $list = @($returns | Where-Object { Test-HookTypeResolved $_ })
+    $list = @($returns | Where-Object { (Test-HookTypeResolved $_) -and (-not (Test-InferredBooleanReturn $_)) })
     if ($list.Count -eq 0) { return '' }
     return ' -> ' + ((@($list) | ForEach-Object { Render-Type $_ $thisPage }) -join ', ')
 }
@@ -1137,17 +1210,44 @@ function Render-FunctionName([string]$className, $fn, [string]$thisPage) {
     return $code
 }
 
+# A networked property's name, linked to its NetworkVar declaration line.
+function Render-NetVarName($nv) {
+    $code = "``$($nv.Name)``"
+    if ($sourceBlobBase -and $nv.SourceFile) { return "[$code]($sourceBlobBase/$($nv.SourceFile)#L$($nv.SourceLine))" }
+    return $code
+}
+
+# A functions page renders the class's ---@api methods, and (when the category opts in
+# with NetworkVars=$true) a table of the entity's networked properties and their
+# generated Get/Set accessors - the public interface of entities driven by NetworkVars
+# rather than tagged methods. Section headings appear only when both are present.
 function Build-FunctionsBlock($cat) {
     $cls = $classes[$cat.Class]
     $fns = if ($cls) { @($cls.Functions | Where-Object { $_.IsApi } | Sort-Object Name) } else { @() }
+    $netvars = if ($cat.NetworkVars -and $cat.Source) { @(Get-NetworkVarModel -RepoRoot $RepoRoot -Source $cat.Source | Sort-Object Name) } else { @() }
     $sb = New-Object System.Text.StringBuilder
-    if ($fns.Count -eq 0) { [void]$sb.AppendLine('_None._'); return $sb.ToString().TrimEnd() }
-    [void]$sb.AppendLine('| Function | Description |')
-    [void]$sb.AppendLine('|-|-|')
-    foreach ($fn in $fns) {
-        $sig = "$(Render-FunctionName $cat.Class $fn $cat.File)($(Render-FunctionArgs $fn.Params $cat.File))$(Render-FunctionReturn $fn.Returns $cat.File)"
-        $desc = if ($fn.Desc) { Format-Cell $fn.Desc } else { '-' }
-        [void]$sb.AppendLine("| $sig | $desc |")
+
+    if ($fns.Count -eq 0 -and $netvars.Count -eq 0) { [void]$sb.AppendLine('_None._'); return $sb.ToString().TrimEnd() }
+
+    if ($fns.Count) {
+        if ($netvars.Count) { [void]$sb.AppendLine('## Methods'); [void]$sb.AppendLine() }
+        [void]$sb.AppendLine('| Function | Description |')
+        [void]$sb.AppendLine('|-|-|')
+        foreach ($fn in $fns) {
+            $sig = "$(Render-FunctionName $cat.Class $fn $cat.File)($(Render-FunctionArgs $fn.Params $cat.File))$(Render-FunctionReturn $fn.Returns $cat.File)"
+            $desc = if ($fn.Desc) { Format-Cell $fn.Desc } else { '-' }
+            [void]$sb.AppendLine("| $sig | $desc |")
+        }
+    }
+
+    if ($netvars.Count) {
+        if ($fns.Count) { [void]$sb.AppendLine() }
+        [void]$sb.AppendLine('## Network variables'); [void]$sb.AppendLine()
+        [void]$sb.AppendLine('| Variable | Type | Getter | Setter |')
+        [void]$sb.AppendLine('|-|-|-|-|')
+        foreach ($nv in $netvars) {
+            [void]$sb.AppendLine("| $(Render-NetVarName $nv) | $(Render-Type $nv.Type $cat.File) | ``Get$($nv.Name)()`` | ``Set$($nv.Name)(value)`` |")
+        }
     }
     return $sb.ToString().TrimEnd()
 }
