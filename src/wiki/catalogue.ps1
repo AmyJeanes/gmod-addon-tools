@@ -42,6 +42,17 @@ function Get-CatField([string]$body, [string]$key) {
 
 function Get-CatLine([string]$text, [int]$idx) { return ($text.Substring(0, $idx) -split "`n").Count }
 
+# Blank out Lua block comments (--[[ ... ]], and the leveled --[==[ ... ]==]),
+# replacing each with same-length whitespace so a commented-out registration is not
+# scanned while source line numbers stay accurate. Line comments are handled inline
+# by Get-CatBalanced.
+function Remove-CatBlockComments([string]$text) {
+    return [regex]::Replace($text, '--\[(=*)\[.*?\]\1\]', {
+        param($m)
+        -join ($m.Value.ToCharArray() | ForEach-Object { if ($_ -eq "`n") { "`n" } else { ' ' } })
+    }, [System.Text.RegularExpressions.RegexOptions]::Singleline)
+}
+
 # The addon's en.json Phrases map (flat "A.B.C" key -> phrase), or an empty map.
 function Get-CatI18n([string]$repoRoot) {
     $map = @{}
@@ -104,6 +115,7 @@ function Get-CatalogueRows {
     foreach ($file in $files) {
         $text = [System.IO.File]::ReadAllText($file.FullName)
         if ($text -notmatch [regex]::Escape($bareName)) { continue }
+        $text = Remove-CatBlockComments $text
         $rel = $file.FullName.Substring($RepoRoot.Length + 1) -replace '\\', '/'
         $localstr = @{}
         foreach ($lv in [regex]::Matches($text, '(?m)^\s*(?:local\s+)?([A-Z][A-Z0-9_]+)\s*=\s*"([^"]*)"')) { $localstr[$lv.Groups[1].Value] = $lv.Groups[2].Value }
