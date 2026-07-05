@@ -1206,7 +1206,12 @@ function Render-FunctionArgs($params, [string]$thisPage) {
     if ($list.Count -eq 0) { return '' }
     $parts = foreach ($p in $list) {
         $disp = '`' + (Format-Cell $p.Name) + '`'
-        if (Test-HookTypeResolved $p.Type) { "${disp}: $(Render-Type $p.Type $thisPage)" } else { "${disp}: _unknown_" }
+        # A vararg is inherently variadic - render it bare, never `...`: _unknown_.
+        # An explicit `any` is a real (if broad) type - render it, don't call it unknown;
+        # only a genuinely untyped param falls through to the _unknown_ "type me" marker.
+        if ($p.Name -eq '...') { $disp }
+        elseif ((Test-HookTypeResolved $p.Type) -or ($p.Type -eq 'any')) { "${disp}: $(Render-Type $p.Type $thisPage)" }
+        else { "${disp}: _unknown_" }
     }
     return ($parts -join ', ')
 }
@@ -1218,7 +1223,12 @@ function Render-FunctionArgs($params, [string]$thisPage) {
 # returns so a void/inferred function reads as a bare signature; a real named type keeps
 # its arrow, and a union carrying one real type (e.g. `Entity|false`) is kept.
 function Test-InferredNoiseReturn([string]$type) {
-    $parts = @(($type.TrimEnd('?') -split '\|') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $t = $type.Trim()
+    # emmylua wraps a multi-value return in parens: (a, b, c). Strip a single outer pair
+    # and split on ',' as well, so a noise tuple like (nil,nil,...) / (0|unknown) is seen
+    # as its components instead of one opaque string that slips past the checks below.
+    if ($t -match '^\((.*)\)\??$') { $t = $Matches[1] }
+    $parts = @(($t.TrimEnd('?') -split '[|,]') | ForEach-Object { $_.Trim().TrimEnd('?') } | Where-Object { $_ })
     if ($parts.Count -eq 0) { return $false }
     # Any unresolved component taints the whole inferred return.
     foreach ($p in $parts) { if ($p -eq 'unknown' -or $p -eq 'any') { return $true } }
