@@ -8,6 +8,7 @@
     FunctionsToExport = @(
         'Install-GmodTools',
         'Invoke-WikiGen',
+        'Build-HookTypeCatalogue',
         'New-AddonHarness',
         'ConvertFrom-LuaValue',
         'Get-HarnessMeta'
