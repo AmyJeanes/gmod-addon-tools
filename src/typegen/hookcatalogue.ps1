@@ -40,7 +40,12 @@ function ConvertTo-HookParamType([string]$t) {
     }
     if ($t -match ':\s*\)' -or $t -match '\(\s*,' -or $t -match ',\s*\)') { return 'any' }
     # collapse the noisy literal-unions the LSP infers from bool-literal call args
-    return ($t -replace '\(boolean\|true\)', 'boolean' -replace '\(false\|true\)', 'boolean' -replace '\(boolean\|false\)', 'boolean')
+    $t = $t -replace '\(boolean\|true\)', 'boolean' -replace '\(false\|true\)', 'boolean' -replace '\(boolean\|false\)', 'boolean'
+    # Any remaining inferred literal-union (e.g. ("pop"|integer|string)) is noise for a hook
+    # payload AND a frequent source of Windows/Linux glua_ls divergence - collapse to `any` so
+    # the generated catalogue is byte-identical across platforms (local == CI).
+    if ($t -match '^\([^)]*\|[^)]*\)\??$') { return 'any' }
+    return $t
 }
 
 function Build-HookTypeCatalogue {

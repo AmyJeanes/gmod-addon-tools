@@ -210,9 +210,16 @@ function Get-HookModel {
     # --- reconcile ---
     $hooks = foreach ($g in ($fires | Group-Object System, Name)) {
         $sites = $g.Group
+        # Pick the canonical fire site: most type-resolved args, then most args, then most
+        # real-identifier args (so callers get named params over arg1/arg2), then a stable
+        # File/Line tie-break. Without the last two, ties are broken by file-scan order, which
+        # differs Windows vs Linux - so local and CI would pick different sites and churn.
         $best = $sites | Sort-Object `
             @{ Expression = { ($_.Args | Where-Object { Test-HookTypeResolved $_.Type }).Count }; Descending = $true }, `
-            @{ Expression = { $_.Args.Count }; Descending = $true } | Select-Object -First 1
+            @{ Expression = { $_.Args.Count }; Descending = $true }, `
+            @{ Expression = { ($_.Args | Where-Object { $_.Display -match '^[A-Za-z_]\w*$' -and $_.Display -notin @('nil', 'true', 'false') }).Count }; Descending = $true }, `
+            @{ Expression = { $_.File } }, `
+            @{ Expression = { $_.Line } } | Select-Object -First 1
         $recvTypes = @($sites | Where-Object { Test-HookTypeResolved $_.RecvType } | Select-Object -ExpandProperty RecvType -Unique)
         if ($recvTypes.Count -gt 1 -and $recvTypes -contains 'Entity') { $recvTypes = @($recvTypes | Where-Object { $_ -ne 'Entity' }) }
         [pscustomobject]@{
