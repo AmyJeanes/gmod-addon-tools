@@ -20,6 +20,7 @@
 . "$PSScriptRoot/src/wiki/netvars.ps1"
 . "$PSScriptRoot/src/wiki/generate.ps1"
 . "$PSScriptRoot/src/typegen/hookcatalogue.ps1"
+. "$PSScriptRoot/src/typing/typing.ps1"
 
 Export-ModuleMember -Function @(
     'Install-GmodTools',
@@ -27,5 +28,8 @@ Export-ModuleMember -Function @(
     'Build-HookTypeCatalogue',
     'New-AddonHarness',
     'Get-HarnessMeta',
-    'ConvertFrom-LuaValue'
+    'ConvertFrom-LuaValue',
+    'Test-GmodTyping',
+    'Get-GmodUntypedParams',
+    'Get-GmodParamMismatch'
 )

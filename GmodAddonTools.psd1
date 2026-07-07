@@ -11,7 +11,10 @@
         'Build-HookTypeCatalogue',
         'New-AddonHarness',
         'ConvertFrom-LuaValue',
-        'Get-HarnessMeta'
+        'Get-HarnessMeta',
+        'Test-GmodTyping',
+        'Get-GmodUntypedParams',
+        'Get-GmodParamMismatch'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()
