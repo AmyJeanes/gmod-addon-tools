@@ -45,7 +45,27 @@ function Resolve-DocCli {
     return $path
 }
 
-# Parse every annotation via emmylua_doc_cli, returning:
+# A field member glua_doc_cli emits is either a real ---@field declaration or one it
+# INFERRED from an `ENT.x =` / `self.x =` assignment once it folder-maps an entity's
+# ENT/SWEP global to the class. Only ---@field-backed fields belong on a schema page,
+# so confirm the source line at the member's loc is a ---@field. Missing/unreadable
+# loc keeps the field (can't disprove it). $cache maps abs path -> source lines.
+function Test-IsDeclaredField($loc, [hashtable]$cache) {
+    if (-not $loc) { return $true }
+    $l = if ($loc -is [System.Array]) { $loc[0] } else { $loc }
+    if (-not $l -or -not $l.file -or -not $l.line) { return $true }
+    $f = [string]$l.file
+    if (-not $cache.ContainsKey($f)) {
+        $cache[$f] = if (Test-Path -LiteralPath $f) { [System.IO.File]::ReadAllLines($f) } else { $null }
+    }
+    $lines = $cache[$f]
+    if ($null -eq $lines) { return $true }
+    $idx = [int]$l.line - 1
+    if ($idx -lt 0 -or $idx -ge $lines.Length) { return $true }
+    return ($lines[$idx] -match '^\s*---@field\b')
+}
+
+# Parse every annotation via glua_doc_cli, returning:
 #   Classes : ordered hashtable name -> @{ Name; Parent; Blurb; Fields = @(@{Name;Type;Optional;Desc}) }
 # $relRoot is the root that source paths are made relative to (the temp mirror when
 # scanning an injected tree); $lineOffsets maps a rel path to the number of injected
@@ -76,12 +96,24 @@ function Parse-Annotations([string]$root, [string]$relRoot, [hashtable]$lineOffs
     }
 
     $classes = [ordered]@{}
+    $fieldLineCache = @{}
     foreach ($t in $doc.types) {
         if ($t.type -ne 'class') { continue }
         $name = $t.name
         if ($classes.Contains($name)) { continue }   # emmylua already merges same-name decls
 
-        $parent = if ($t.bases -and $t.bases.Count -gt 0) { $t.bases -join ', ' } else { $null }
+        # Dedup bases and drop the ENT/SWEP struct pseudo-bases: once glua_doc_cli
+        # folder-maps an entity it appends [ENT, Entity] per file, so a multi-file
+        # entity's base list repeats (and ENT/SWEP aren't documentable classes).
+        $parent = $null
+        if ($t.bases -and $t.bases.Count -gt 0) {
+            $seen = @{}; $keep = @()
+            foreach ($b in $t.bases) {
+                if ($b -eq 'ENT' -or $b -eq 'SWEP') { continue }
+                if (-not $seen.ContainsKey($b)) { $seen[$b] = $true; $keep += $b }
+            }
+            if ($keep.Count) { $parent = $keep -join ', ' }
+        }
         $blurb  = if ($t.description) { ($t.description -replace '\r?\n', ' ').Trim() } else { $null }
         if (-not $blurb) { $blurb = $null }
 
@@ -89,6 +121,7 @@ function Parse-Annotations([string]$root, [string]$relRoot, [hashtable]$lineOffs
         $functions = @()
         foreach ($m in $t.members) {
             if ($m.type -eq 'field') {
+                if (-not (Test-IsDeclaredField $m.loc $fieldLineCache)) { continue }
                 $fname = $m.name
                 $ftype = if ($m.typ) { $m.typ } else { '' }
                 # emmylua encodes optionality as a trailing '?'; index signatures ([k]) are always optional.
