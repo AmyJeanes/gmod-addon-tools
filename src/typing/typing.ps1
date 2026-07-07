@@ -18,7 +18,8 @@
 # itself a named definition the census covers; demanding a per-callback ---@param
 # would be noise. A param is typed when it carries a real ---@param type, an explicit
 # `---@param x any` (accepted like a vararg), or the analyzer resolves it to a
-# concrete type (the method-inheritance rescue).
+# concrete type (the method-inheritance rescue). A param literally named `_` is
+# skipped outright as a discard, like a vararg.
 
 $script:TypingLuaKeywords = @('nil', 'true', 'false', 'function', 'end', 'local', 'if', 'then',
     'else', 'elseif', 'for', 'in', 'do', 'while', 'repeat', 'until', 'return', 'break', 'and', 'or', 'not', 'goto', 'self')
@@ -254,7 +255,8 @@ function Get-FileUntyped([string]$path, [string]$rel, [hashtable]$ctx) {
         }
 
         $pl = Get-ParamListText $lines $i $col
-        $params = @(Split-Params $pl.Text | Where-Object { $_ -ne 'self' -and $_ -ne '...' })
+        # `_` is the discard-param convention - like a vararg it holds nothing worth typing.
+        $params = @(Split-Params $pl.Text | Where-Object { $_ -ne 'self' -and $_ -ne '...' -and $_ -ne '_' })
         if (-not $params.Count) { continue }
 
         $ann = Get-AnnotationsAbove $lines $i
