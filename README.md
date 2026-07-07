@@ -6,10 +6,13 @@ rest - so they stop being copy-pasted per repo.
 
 It owns three things, all **generic** (nothing addon-specific lives here):
 
-1. **Tooling provisioning** (`Install-GmodTools`) - fetches pinned `glua_check`,
-   `glua_ls`, the glua-api stubs, and (for wiki consumers) `emmylua_doc_cli` +
-   MoonSharp into a consumer repo's `.tools/`. The versions are pinned **here**,
-   so every addon runs the exact same engine and Renovate bumps them in one place.
+1. **Tooling provisioning** (`Install-GmodTools`) - always fetches pinned
+   `glua_check`, `glua_ls`, and the glua-api stubs into a consumer repo's `.tools/`,
+   plus two opt-in tools: `emmylua_doc_cli` (the EmmyLua type-model CLI the wiki
+   generator **and** the zero-untyped typing gate consume - `-TypeModel`) and
+   MoonSharp (the headless harness interpreter - `-Harness`). `-Wiki` implies both.
+   The versions are pinned **here**, so every addon runs the exact same engine and
+   Renovate bumps them in one place.
 2. **Wiki generator engine** (`Invoke-WikiGen`) - the emmylua_doc_cli -> markdown
    type-reference renderer: annotation parsing, ownership resolution, GMod-wiki
    linking, marker splicing, sidebar management, the Default/Required/Used-in

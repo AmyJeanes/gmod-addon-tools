@@ -48,7 +48,7 @@ function New-AddonHarness {
     $dll = Join-Path $toolsRoot 'bin/MoonSharp.Interpreter.dll'
     if (-not (Test-Path $dll)) {
         Write-Host 'MoonSharp not found; provisioning tools...'
-        Install-GmodTools -Root $AddonPath -Wiki | Out-Null
+        Install-GmodTools -Root $AddonPath -Harness | Out-Null
     }
     if (-not ('MoonSharp.Interpreter.Script' -as [type])) { Add-Type -Path $dll }
 
