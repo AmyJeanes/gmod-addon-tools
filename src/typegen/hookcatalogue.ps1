@@ -193,13 +193,23 @@ function Build-GlobalHookOverloads {
         # Fragment basename: types/<Id>_hook_overloads.lua. Names the addon whose customs
         # these are (e.g. 'wp'), so it reads right when discovered from a sibling repo.
         [Parameter(Mandatory)] [string] $Id,
+        # -like patterns naming the hooks this addon OWNS (e.g. 'wp-*', 'SkinChanged').
+        # Only owned hooks are emitted, so a re-fire of a standard GMod hook the addon
+        # re-dispatches (hook.Call("CanTool", ...)) is not mistaken for a custom hook -
+        # glua-api's stubs don't model every sandbox hook, so the built-in set alone
+        # can't tell them apart. Required: a new producer that forgets it fails loudly
+        # rather than silently emitting a bogus overload for a shared hook.
+        [Parameter(Mandatory)] [string[]] $Owns,
         [switch] $NoLsp
     )
     $Root = (Resolve-Path $Root).Path
     $builtins = Get-BuiltinHookNames $Root
 
     $model  = Get-HookModel -RepoRoot $Root -NoLsp:$NoLsp
-    $custom = @($model | Where-Object { $_.System -eq 'gmod' -and -not $builtins.Contains($_.Name) } | Sort-Object Name)
+    $custom = @($model | Where-Object {
+        $h = $_
+        $h.System -eq 'gmod' -and -not $builtins.Contains($h.Name) -and (@($Owns | Where-Object { $h.Name -like $_ }).Count -gt 0)
+    } | Sort-Object Name)
 
     $overloads = foreach ($h in $custom) {
         $used = [System.Collections.Generic.HashSet[string]]::new()
