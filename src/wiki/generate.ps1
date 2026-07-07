@@ -67,12 +67,9 @@ function Test-IsDeclaredField($loc, [hashtable]$cache) {
 
 # Parse every annotation via glua_doc_cli, returning:
 #   Classes : ordered hashtable name -> @{ Name; Parent; Blurb; Fields = @(@{Name;Type;Optional;Desc}) }
-# $relRoot is the root that source paths are made relative to (the temp mirror when
-# scanning an injected tree); $lineOffsets maps a rel path to the number of injected
-# header lines to subtract, so a method's source link still points at the real line.
-function Parse-Annotations([string]$root, [string]$relRoot, [hashtable]$lineOffsets) {
-    if (-not $relRoot) { $relRoot = $RepoRoot }
-    if (-not $lineOffsets) { $lineOffsets = @{} }
+# Source paths are made relative to $RepoRoot; a member outside it (an external
+# cross-link scan) gets no source link.
+function Parse-Annotations([string]$root) {
     $docCli = Resolve-DocCli
 
     # glua_doc_cli requires the JSON output path to end in .json (a .tmp path errors).
@@ -141,10 +138,9 @@ function Parse-Annotations([string]$root, [string]$relRoot, [hashtable]$lineOffs
                 $srcRel = $null; $srcLine = $null
                 if ($m.loc -and $m.loc.file) {
                     $abs = ($m.loc.file -replace '\\', '/')
-                    $rootFwd = ($relRoot -replace '\\', '/').TrimEnd('/')
+                    $rootFwd = ($RepoRoot -replace '\\', '/').TrimEnd('/')
                     if ($abs.StartsWith($rootFwd, [System.StringComparison]::OrdinalIgnoreCase)) { $srcRel = $abs.Substring($rootFwd.Length).TrimStart('/') }
                     $srcLine = $m.loc.line
-                    if ($srcRel -and $srcLine -and $lineOffsets.ContainsKey($srcRel)) { $srcLine = $srcLine - $lineOffsets[$srcRel] }
                 }
                 $functions += @{
                     Name = $m.name; IsMeth = [bool]$m.is_meth
@@ -205,72 +201,25 @@ function Get-FieldDefault([hashtable]$map, [string]$class, [string]$field) {
     return @{ Has = $true; Value = $p.Value }
 }
 
-# --- Entity method typing (pre-scan injection) -------------------------------
-# GMod entity/weapon methods are defined as `function ENT:Method` where ENT is an
-# untyped shared global, so emmylua can't attach them to the entity's ---@class. A
-# functions category with a Source folder opts in: we mirror the lua tree to a temp
-# dir and prepend `---@class <Class>` + `local ENT = ENT` to every file in that folder,
-# so the folder's methods attach to that class - folder-scoped, so one entity's
-# methods never leak onto another (a single global bind does). It all happens in the
-# copy emmylua reads; real source is never touched, and no `self`-typing diagnostics
-# land on the method bodies. A rel-path -> injected-line-count map keeps source links
-# pointing at the real (un-injected) line.
-# The runtime global an entity/weapon's methods are defined on - SWEP under a
-# lua/weapons source, ENT otherwise - inferred from the Source path. A Global on the
-# category overrides (for the rare addon that doesn't follow the folder convention).
+# --- Entity/weapon method prefix ---------------------------------------------
+# glua_doc_cli folder-maps `function ENT:Method` (and SWEP) under lua/entities|weapons/<x>/
+# onto that entity's ---@class natively, so those methods are already on the class model.
+# For rendering, a method signature is prefixed with the runtime global it's defined on -
+# SWEP under a lua/weapons source, ENT otherwise - inferred from the Source path. A Global
+# on the category overrides (for the rare addon that doesn't follow the folder convention).
 function Get-EntityGlobal([string]$source, [string]$override) {
     if ($override) { return $override }
     if ($source -match '(^|[\\/])weapons([\\/]|$)') { return 'SWEP' }
     return 'ENT'
 }
 
-function New-InjectedScanTree($injections) {
-    $tempRepo = Join-Path ([System.IO.Path]::GetTempPath()) ("gmod-addon-wiki-inject-" + [guid]::NewGuid().ToString('N'))
-    $tempLua  = Join-Path $tempRepo 'lua'
-    Copy-Item -LiteralPath $LuaRoot -Destination $tempLua -Recurse -Force
-    $lineOffsets = @{}
-    foreach ($inj in $injections) {
-        $global      = Get-EntityGlobal $inj.Source $inj.Global
-        $header      = "---@class $($inj.Class)`nlocal $global = $global`n"
-        $headerLines = @([regex]::Matches($header, "`n")).Count
-        $srcDir = Join-Path $tempRepo $inj.Source
-        if (-not (Test-Path -LiteralPath $srcDir)) { Write-Warning "Injection source '$($inj.Source)' not found - skipped."; continue }
-        foreach ($file in (Get-ChildItem -LiteralPath $srcDir -Filter *.lua -File -Recurse)) {
-            [System.IO.File]::WriteAllText($file.FullName, $header + [System.IO.File]::ReadAllText($file.FullName))
-            $rel = (($file.FullName.Substring($tempRepo.Length)).TrimStart('\', '/') -replace '\\', '/')
-            $lineOffsets[$rel] = $headerLines
-        }
-    }
-    return @{ TempRepo = $tempRepo; ScanLuaRoot = $tempLua; RelRoot = $tempRepo; LineOffsets = $lineOffsets }
-}
-
 # --- Ownership ---------------------------------------------------------------
 
-# The clean scan is the field/class model. Entity methods (`function ENT:X`) can't
-# attach here because ENT is an untyped shared global - that needs the injected scan
-# below. Binding a class to ENT also makes emmylua infer every `ENT.x = ` / `self.x = `
-# assignment as a field, so we take only the injected scan's *methods* and keep this
-# scan's fields, leaving Roots field pages limited to the real ---@field declarations.
+# The class/field/method model. glua_doc_cli folder-maps each entity/weapon's `ENT:`/
+# `SWEP:` methods onto its ---@class natively; Test-IsDeclaredField (above) keeps a
+# schema class's field table limited to real ---@field declarations.
 $parsed  = Parse-Annotations $LuaRoot
 $classes = $parsed.Classes
-
-$injections = @($Categories | Where-Object { $_.Source -and $_.Class } |
-    ForEach-Object { @{ Source = $_.Source; Class = $_.Class; Global = $_.Global } })
-if ($injections.Count) {
-    $injectTree = New-InjectedScanTree $injections
-    try {
-        $injected = (Parse-Annotations $injectTree.ScanLuaRoot $injectTree.RelRoot $injectTree.LineOffsets).Classes
-        foreach ($inj in $injections) {
-            if (-not $injected.Contains($inj.Class)) { continue }
-            if ($classes.Contains($inj.Class)) { $classes[$inj.Class].Functions = $injected[$inj.Class].Functions }
-            else { $classes[$inj.Class] = $injected[$inj.Class] }
-        }
-    } finally {
-        if (Test-Path -LiteralPath $injectTree.TempRepo) {
-            Remove-Item -LiteralPath $injectTree.TempRepo -Recurse -Force -ErrorAction SilentlyContinue
-        }
-    }
-}
 
 # className -> default subtree, from the caller's provider (loaded headless once).
 # No provider -> no captured defaults -> every page stays 3-column.
