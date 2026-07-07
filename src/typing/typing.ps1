@@ -104,18 +104,22 @@ function Get-IgnoredLuaFiles([string]$RepoRoot, [string]$LuaRoot) {
     return , $ignored
 }
 
-# The brace+paren nesting depth at the START of each line. A statement-level function
-# definition sits at depth 0; a closure that is a table field or call argument sits at
-# depth > 0 (opened by an enclosing `{`/`(`), which is how we tell "a definition the
-# author owns" from "a receiver-typed callback". Lua comments and strings (including
-# long `[[ ]]` / `--[[ ]]` brackets, the only multi-line ones) are skipped so their
-# braces never skew the count.
+# Per-line @{ Depth; InLong }: the brace+paren nesting depth at the START of each line,
+# and whether that line starts INSIDE a long bracket (a `[[ ]]` string or `--[[ ]]`
+# block comment). A statement-level function definition sits at depth 0; a closure that
+# is a table field or call argument sits at depth > 0 (opened by an enclosing `{`/`(`),
+# which is how we tell "a definition the author owns" from "a receiver-typed callback".
+# A line that starts inside a long bracket is comment/string text, not code, so def
+# detection skips it. Lua comments and strings are lexed so their braces never skew the
+# count.
 function Get-LineStartDepths([string[]]$lines) {
     $depths = New-Object 'int[]' $lines.Count
+    $inLong = New-Object 'bool[]' $lines.Count
     $depth = 0
     $longLevel = -1   # -1 = not inside a long bracket; >=0 = inside, with that many '='
     for ($li = 0; $li -lt $lines.Count; $li++) {
         $depths[$li] = $depth
+        $inLong[$li] = ($longLevel -ge 0)
         $line = $lines[$li]
         $i = 0; $n = $line.Length
         while ($i -lt $n) {
@@ -146,7 +150,7 @@ function Get-LineStartDepths([string[]]$lines) {
             $i++
         }
     }
-    return , $depths
+    return @{ Depth = $depths; InLong = $inLong }
 }
 
 # Everything the source scan needs, resolved once per repo.
@@ -201,7 +205,9 @@ function Get-AnnotationsAbove([string[]]$lines, [int]$fnLine) {
         $s = $lines[$k].Trim()
         if ($s -eq '') { break }
         if (-not $s.StartsWith('--')) { break }
-        $mp = [regex]::Match($s, '^---?@param\s+([A-Za-z_]\w*|\.\.\.)\s+\S')
+        # `---@param name? type` (EmmyLua optional-param syntax) - the `?` sits between
+        # the name and the type, so allow it before requiring a type token.
+        $mp = [regex]::Match($s, '^---?@param\s+([A-Za-z_]\w*|\.\.\.)\??\s+\S')
         if ($mp.Success) { [void]$typed.Add($mp.Groups[1].Value) }
         if ([regex]::IsMatch($s, '^---?@type\s+fun\s*\(')) { $hasFun = $true }
         $k--
@@ -214,13 +220,16 @@ function Get-FileUntyped([string]$path, [string]$rel, [hashtable]$ctx) {
     $text = [System.IO.File]::ReadAllText($path)
     if ($text -match '(?m)^\s*---@vendored\b') { return @() }
     $lines = [regex]::Split($text, "`r`n|`n")
-    $depths = Get-LineStartDepths $lines
+    $lineInfo = Get-LineStartDepths $lines
+    $depths = $lineInfo.Depth
+    $inLong = $lineInfo.InLong
 
     $reNamed = [regex]'^(?<indent>\s*)(?<local>local\s+)?function\s+(?<name>[\w.:]+)\s*\('
     $reAssign = [regex]'^(?<indent>\s*)(?<local>local\s+)?(?<name>[\w.\[\]"'':]+)\s*=\s*function\s*\('
 
     $findings = @()
     for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($inLong[$i]) { continue }   # line starts inside a `[[ ]]` string / `--[[ ]]` block comment
         $line = $lines[$i]
         $name = $null; $kind = $null; $col = -1
 
