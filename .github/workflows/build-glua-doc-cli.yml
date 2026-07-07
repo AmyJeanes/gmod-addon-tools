@@ -1,0 +1,105 @@
+name: Build glua_doc_cli
+
+# Builds glua_doc_cli - the GLua-aware documentation CLI - from Pollux12/gmod-glua-ls,
+# which ships it as a crate but NOT as a release asset (only glua_ls + glua_check are
+# released there). We build the linux-x64 + win32-x64 binaries and publish them as a
+# gmod-addon-tools release (tag `glua_doc_cli-<version>`) so Install-GmodTools can
+# provision it exactly like glua_ls / glua_check. Manual dispatch, pinned to a
+# gmod-glua-ls tag (keep it matched to $GluaLsVersion in src/install.ps1 so the doc
+# CLI resolves types the same way glua_ls / glua_check do).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: gmod-glua-ls tag to build glua_doc_cli from (match $GluaLsVersion)
+        required: true
+        default: "1.0.27"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04,   target: x86_64-unknown-linux-gnu, platform: linux-x64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,   platform: win32-x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout gmod-glua-ls
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: Pollux12/gmod-glua-ls
+          ref: ${{ inputs.version }}
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: doc-cli-${{ matrix.target }}-${{ inputs.version }}
+
+      - name: Build glua_doc_cli
+        run: |
+          rustup target add ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }} --bin glua_doc_cli
+
+      - name: Package (Linux)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/glua_doc_cli dist/glua_doc_cli
+          chmod +x dist/glua_doc_cli
+          tar -zcvf glua_doc_cli-${{ matrix.platform }}.tar.gz -C dist glua_doc_cli
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/glua_doc_cli.exe" dist/glua_doc_cli.exe
+          Compress-Archive -Path dist/glua_doc_cli.exe -DestinationPath glua_doc_cli-${{ matrix.platform }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: glua_doc_cli-${{ matrix.platform }}
+          path: |
+            glua_doc_cli-${{ matrix.platform }}.tar.gz
+            glua_doc_cli-${{ matrix.platform }}.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish glua_doc_cli release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="glua_doc_cli-${{ inputs.version }}"
+          mapfile -t files < <(find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
+          echo "Assets: ${files[*]}"
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "$tag" "${files[@]}" --repo "${{ github.repository }}" \
+              --title "glua_doc_cli ${{ inputs.version }}" \
+              --notes "glua_doc_cli built from Pollux12/gmod-glua-ls ${{ inputs.version }} (the crate exists upstream but is not published as a release asset there). GLua-aware documentation CLI provisioned by Install-GmodTools; drop-in replacement for emmylua_doc_cli."
+          fi
