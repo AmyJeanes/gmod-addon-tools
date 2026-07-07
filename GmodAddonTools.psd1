@@ -6,9 +6,11 @@
     Description       = 'Shared build/dev tooling for Garry''s Mod addons: tool provisioning, wiki-API generation, and the headless Lua harness.'
     PowerShellVersion = '7.0'
     FunctionsToExport = @(
-        'Install-GmodTools',
+        'Initialize-GmodTools',
+        'Sync-GmodHookTypes',
         'Invoke-WikiGen',
         'Build-HookTypeCatalogue',
+        'Build-GlobalHookOverloads',
         'New-AddonHarness',
         'ConvertFrom-LuaValue',
         'Get-HarnessMeta',

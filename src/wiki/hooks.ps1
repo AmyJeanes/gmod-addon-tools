@@ -174,7 +174,7 @@ function Get-HookModel {
     # --- enrich via LSP ---
     $gluaLs = Resolve-GluaLs $RepoRoot
     if (-not $NoLsp -and -not (Test-Path -LiteralPath $gluaLs)) {
-        Write-Warning "glua_ls not found at $gluaLs - hook argument types will be omitted (run Install-GmodTools)."
+        Write-Warning "glua_ls not found at $gluaLs - hook argument types will be omitted (run Initialize-GmodTools)."
         $NoLsp = $true
     }
 

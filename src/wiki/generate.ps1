@@ -39,7 +39,7 @@ function Resolve-DocCli {
     $exe = if ($IsWindows -or ($null -eq $IsWindows -and $env:OS -eq 'Windows_NT')) { 'emmylua_doc_cli.exe' } else { 'emmylua_doc_cli' }
     $path = Join-Path $RepoRoot ".tools/bin/$exe"
     if (-not (Test-Path $path)) {
-        throw "emmylua_doc_cli not found at $path - run Install-GmodTools -Wiki first."
+        throw "emmylua_doc_cli not found at $path - run Initialize-GmodTools -Wiki first."
     }
     return $path
 }

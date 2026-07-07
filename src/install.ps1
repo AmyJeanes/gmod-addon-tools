@@ -1,7 +1,8 @@
 #!/usr/bin/env pwsh
-# Install-GmodTools: provisions the pinned GMod tooling into a consumer repo's
-# .tools/. Idempotent - re-running is a no-op when the requested versions are
-# already present. The versions are pinned here (once, for every consumer).
+# Initialize-GmodTools: provisions the pinned GMod tooling into a consumer repo's
+# .tools/ and syncs custom-hook type overloads into the glua-api stubs. Idempotent -
+# re-running is a no-op when the requested versions are already present and the
+# hook overloads are current. The versions are pinned here (once, for every consumer).
 
 # Pinned versions ------------------------------------------------------------
 # Renovate (renovate.json customManagers) bumps these on upstream releases.
@@ -25,10 +26,11 @@ $EmmyDocVersion = '0.23.2'
 # renovate: datasource=nuget depName=MoonSharp
 $MoonSharpVersion = '2.0.0'
 
-function Install-GmodTools {
+function Initialize-GmodTools {
     <#
     .SYNOPSIS
-        Provisions the pinned GMod tooling into a consumer repo's .tools/.
+        Provisions the pinned GMod tooling into a consumer repo's .tools/ and syncs
+        custom-hook type overloads into the glua-api stubs.
     .PARAMETER Root
         Consumer repo root; tools land in <Root>/.tools/ (where .luarc.json and the
         glua-lsp plugin both look). Defaults to the current directory.
@@ -172,6 +174,12 @@ function Install-GmodTools {
         Install-Archive -Url $url -Dest $GluaApiDir
         Set-Content -Path $GluaApiMark -Value $GluaApiVersion
     }
+
+    # Splice custom-hook overloads (this repo's + sibling addons', from committed
+    # types/*_hook_overloads.lua fragments) into the freshly-provisioned hook.lua, so
+    # hook.Add("<custom>", ...) callbacks type their params. Runs every install (a
+    # sibling fragment may have changed even when glua-api itself was already current).
+    Sync-GmodHookTypes -Root $Root
 
     # Mirror binaries to .tools/bin/ - scripts/glua-check.ps1 invokes glua_check
     # from here, and the glua-lsp Claude Code plugin's shim resolves glua_ls

@@ -48,7 +48,7 @@ function New-AddonHarness {
     $dll = Join-Path $toolsRoot 'bin/MoonSharp.Interpreter.dll'
     if (-not (Test-Path $dll)) {
         Write-Host 'MoonSharp not found; provisioning tools...'
-        Install-GmodTools -Root $AddonPath -Harness | Out-Null
+        Initialize-GmodTools -Root $AddonPath -Harness | Out-Null
     }
     if (-not ('MoonSharp.Interpreter.Script' -as [type])) { Add-Type -Path $dll }
 
@@ -128,7 +128,7 @@ function New-AddonHarness {
     # GMod engine enums (MASK_*, CONTENTS_*, COLLISION_GROUP_*, ...) come from the
     # glua-api stub dump, which assigns the real numeric values. Loading it gives
     # the addon correct enum constants instead of nil, so bit ops and comparisons
-    # behave. Provisioned by Install-GmodTools alongside MoonSharp.
+    # behave. Provisioned by Initialize-GmodTools alongside MoonSharp.
     $enumsPath = Join-Path $toolsRoot 'glua-api/enums.lua'
     if (Test-Path $enumsPath) {
         $lua.DoString([System.IO.File]::ReadAllText($enumsPath), $null, 'glua-api/enums.lua') | Out-Null

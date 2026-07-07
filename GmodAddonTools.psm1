@@ -1,9 +1,11 @@
 # GmodAddonTools - shared GMod addon build/dev tooling.
 #
 # Public API (see GmodAddonTools.psd1 FunctionsToExport):
-#   Install-GmodTools     - provision pinned tooling into a consumer's .tools/
+#   Initialize-GmodTools  - provision pinned tooling into a consumer's .tools/ + sync hook overloads
+#   Sync-GmodHookTypes    - splice custom-hook ---@overloads into the provisioned hook.lua
 #   Invoke-WikiGen        - render the API type-reference wiki from annotations
 #   Build-HookTypeCatalogue - inject literal-string AddHook ---@overloads from CallHook sites
+#   Build-GlobalHookOverloads - emit an addon's custom hook.Call/Run overload fragment
 #   New-AddonHarness      - load an addon's content Lua headless under MoonSharp
 #   Get-HarnessMeta       - the harness's Vector/Angle/Color/Material metatables
 #   ConvertFrom-LuaValue  - walk a MoonSharp value into PowerShell objects
@@ -23,9 +25,11 @@
 . "$PSScriptRoot/src/typing/typing.ps1"
 
 Export-ModuleMember -Function @(
-    'Install-GmodTools',
+    'Initialize-GmodTools',
+    'Sync-GmodHookTypes',
     'Invoke-WikiGen',
     'Build-HookTypeCatalogue',
+    'Build-GlobalHookOverloads',
     'New-AddonHarness',
     'Get-HarnessMeta',
     'ConvertFrom-LuaValue',
