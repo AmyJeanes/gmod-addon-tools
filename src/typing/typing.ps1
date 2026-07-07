@@ -30,7 +30,7 @@ $script:TypingLuaKeywords = @('nil', 'true', 'false', 'function', 'end', 'local'
 $script:TypingHardExcludeDirs = @('gmod_wire_expression2')
 
 function Resolve-TypingDocCli([string]$RepoRoot) {
-    $exe = if ($IsWindows -or ($null -eq $IsWindows -and $env:OS -eq 'Windows_NT')) { 'emmylua_doc_cli.exe' } else { 'emmylua_doc_cli' }
+    $exe = if ($IsWindows -or ($null -eq $IsWindows -and $env:OS -eq 'Windows_NT')) { 'glua_doc_cli.exe' } else { 'glua_doc_cli' }
     $path = Join-Path $RepoRoot ".tools/bin/$exe"
     if (Test-Path $path) { return $path }
     return $null
@@ -53,11 +53,16 @@ function Test-ConcreteType([string]$typ) {
 function Get-EmmyFnModel([string]$RepoRoot, [string]$LuaRoot) {
     $model = @{}
     $docCli = Resolve-TypingDocCli $RepoRoot
-    if (-not $docCli) { Write-Warning "emmylua_doc_cli not found - method inference rescue disabled (source scan only)."; return $model }
+    if (-not $docCli) { Write-Warning "glua_doc_cli not found - method inference rescue disabled (source scan only)."; return $model }
 
+    # Load the repo's .luarc.json (glua-api + sibling libraries) - we scan lua/, which
+    # has no config of its own, so an inherited param typed via a GMod global resolves.
+    $cfgArgs = @()
+    $luarc = Join-Path $RepoRoot '.luarc.json'
+    if (Test-Path $luarc) { $cfgArgs = @('-c', $luarc) }
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("gmod-typing-" + [guid]::NewGuid().ToString('N') + ".json")
     try {
-        & $docCli $LuaRoot -f json -o $tmp --exclude '**/gmod_wire_expression2/**' | Out-Null
+        & $docCli $LuaRoot @cfgArgs -f json -o $tmp --exclude '**/gmod_wire_expression2/**' | Out-Null
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tmp)) { return $model }
         $doc = (Get-Content -LiteralPath $tmp -Raw -Encoding utf8) | ConvertFrom-Json
     } finally {

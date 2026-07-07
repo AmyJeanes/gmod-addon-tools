@@ -1,6 +1,6 @@
 # Invoke-WikiGen: renders the API type-reference wiki pages from a consumer's
-# ---@class / ---@field annotations. emmylua_doc_cli (the same EmmyLua engine as
-# glua_ls) parses the annotations into a JSON type model; this projects that into
+# ---@class / ---@field annotations. glua_doc_cli (the GLua fork's doc CLI, same
+# analyzer core as glua_ls) parses the annotations into a JSON type model; this projects that into
 # one markdown page per category between the generated-block markers in the wiki
 # clone (hand-written intros preserved). Field types render exactly as the
 # analyzer resolves them, so they match editor hover. New-AddonHarness /
@@ -29,17 +29,18 @@ $LuaRoot  = Join-Path $RepoRoot "lua"
 # references link to that page, and each category becomes one wiki page (its
 # hand-written intro above the markers is preserved).
 
-# --- Annotation parser (emmylua_doc_cli) -------------------------------------
-# The ---@class / ---@field type model is produced by emmylua_doc_cli, so the
-# wiki types are exactly what the analyzer resolves (matching editor hover) and
-# there is no hand-rolled type parsing here - we just post-process its JSON into
-# the small shape the renderer consumes.
+# --- Annotation parser (glua_doc_cli) ----------------------------------------
+# The ---@class / ---@field type model is produced by glua_doc_cli (the GLua fork's
+# doc CLI - same analyzer core as glua_ls/glua_check), so the wiki types are exactly
+# what the analyzer resolves (matching editor hover, including entity/weapon methods
+# auto-attached to their class by folder) and there is no hand-rolled type parsing
+# here - we just post-process its JSON into the small shape the renderer consumes.
 
 function Resolve-DocCli {
-    $exe = if ($IsWindows -or ($null -eq $IsWindows -and $env:OS -eq 'Windows_NT')) { 'emmylua_doc_cli.exe' } else { 'emmylua_doc_cli' }
+    $exe = if ($IsWindows -or ($null -eq $IsWindows -and $env:OS -eq 'Windows_NT')) { 'glua_doc_cli.exe' } else { 'glua_doc_cli' }
     $path = Join-Path $RepoRoot ".tools/bin/$exe"
     if (-not (Test-Path $path)) {
-        throw "emmylua_doc_cli not found at $path - run Initialize-GmodTools -Wiki first."
+        throw "glua_doc_cli not found at $path - run Initialize-GmodTools -Wiki first."
     }
     return $path
 }
@@ -54,11 +55,21 @@ function Parse-Annotations([string]$root, [string]$relRoot, [hashtable]$lineOffs
     if (-not $lineOffsets) { $lineOffsets = @{} }
     $docCli = Resolve-DocCli
 
-    # emmylua_doc_cli requires the JSON output path to end in .json (a .tmp path errors).
+    # glua_doc_cli requires the JSON output path to end in .json (a .tmp path errors).
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("gmod-addon-wiki-api-" + [guid]::NewGuid().ToString('N') + ".json")
+    # Point it at the SCANNED repo's .luarc.json so the glua-api stubs (+ sibling
+    # libraries) load: we scan lua/ (or a temp mirror), which carries no config of its
+    # own, so without this a return built from a GMod global (LocalToWorld -> Vector)
+    # resolves to `unknown`. Derive from $root's parent so an external sibling scan
+    # (cross-link discovery) uses ITS config, not ours; a temp mirror (no config there)
+    # falls back to this repo's, which owns the injected tree.
+    $cfgArgs = @()
+    $luarc = Join-Path (Split-Path -Parent $root) '.luarc.json'
+    if (-not (Test-Path $luarc)) { $luarc = Join-Path $RepoRoot '.luarc.json' }
+    if (Test-Path $luarc) { $cfgArgs = @('-c', $luarc) }
     try {
-        & $docCli $root -f json -o $tmp --exclude '**/gmod_wire_expression2/**' | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "emmylua_doc_cli failed (exit $LASTEXITCODE)." }
+        & $docCli $root @cfgArgs -f json -o $tmp --exclude '**/gmod_wire_expression2/**' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "glua_doc_cli failed (exit $LASTEXITCODE)." }
         $doc = (Get-Content -LiteralPath $tmp -Raw -Encoding utf8) | ConvertFrom-Json
     } finally {
         Remove-Item $tmp -Force -ErrorAction SilentlyContinue

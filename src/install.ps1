@@ -12,11 +12,14 @@ $GluaLsVersion  = '1.0.27'
 # Releases: https://github.com/luttje/glua-api-snippets/releases
 # renovate: datasource=github-releases depName=luttje/glua-api-snippets versioning=loose
 $GluaApiVersion = '2026-06-28_08-26-18'
-# emmylua_doc_cli drives the wiki generator - it parses the ---@class / ---@field
-# annotations into a JSON type model (same EmmyLua engine as glua_ls).
-# Releases: https://github.com/EmmyLuaLs/emmylua-analyzer-rust/releases
-# renovate: datasource=github-releases depName=EmmyLuaLs/emmylua-analyzer-rust
-$EmmyDocVersion = '0.23.2'
+# glua_doc_cli drives the wiki generator + typing gate - it parses the ---@class /
+# ---@field annotations into a JSON type model. It is the GLua fork's doc CLI (same
+# analyzer core as glua_ls / glua_check), so it resolves types like the IDE, unlike
+# upstream emmylua_doc_cli. Pollux ships it as a crate but not a release asset, so we
+# build+host it: the "Build glua_doc_cli" workflow publishes a `glua_doc_cli-<ver>`
+# release on THIS repo from Pollux's tagged source. Pinned to $GluaLsVersion so it
+# resolves identically; a version bump auto-builds the matching release (that workflow).
+$GluaDocCliVersion = $GluaLsVersion
 # MoonSharp (pure-C# Lua interpreter) drives the headless harness - it runs the
 # addon's content-definition Lua under a GMod stub environment to extract runtime
 # defaults for the wiki. Shipped as a NuGet package; the netstandard DLL loads
@@ -35,8 +38,8 @@ function Initialize-GmodTools {
         Consumer repo root; tools land in <Root>/.tools/ (where .luarc.json and the
         glua-lsp plugin both look). Defaults to the current directory.
     .PARAMETER TypeModel
-        Also provision emmylua_doc_cli - the EmmyLua type-model CLI that both the
-        wiki generator and the zero-untyped typing gate consume. Implied by -Wiki.
+        Also provision glua_doc_cli - the GLua type-model CLI that both the wiki
+        generator and the zero-untyped typing gate consume. Implied by -Wiki.
     .PARAMETER Harness
         Also provision MoonSharp - the pure-C# Lua interpreter the headless
         defaults harness runs on. Implied by -Wiki.
@@ -54,7 +57,7 @@ function Initialize-GmodTools {
 
     $ErrorActionPreference = 'Stop'
 
-    # emmylua_doc_cli feeds the wiki generator AND the typing gate; MoonSharp feeds
+    # glua_doc_cli feeds the wiki generator AND the typing gate; MoonSharp feeds
     # only the headless harness. -Wiki wants both; the narrower switches let a
     # non-wiki consumer (the typing gate) pull just the type model.
     $wantTypeModel = $Wiki -or $TypeModel
@@ -66,7 +69,7 @@ function Initialize-GmodTools {
     $BinDir       = Join-Path $ToolsRoot 'bin'
     $GluaCheckDir = Join-Path $ToolsRoot "glua-check/$GluaLsVersion"
     $GluaLsDir    = Join-Path $ToolsRoot "glua-ls/$GluaLsVersion"
-    $EmmyDocDir   = Join-Path $ToolsRoot "emmylua-doc-cli/$EmmyDocVersion"
+    $GluaDocCliDir = Join-Path $ToolsRoot "glua-doc-cli/$GluaDocCliVersion"
     $MoonSharpDir = Join-Path $ToolsRoot "moonsharp/$MoonSharpVersion"
     $GluaApiDir   = Join-Path $ToolsRoot 'glua-api'
     $GluaApiMark  = Join-Path $GluaApiDir '.version'
@@ -107,7 +110,7 @@ function Initialize-GmodTools {
 
     function Install-Binary {
         param(
-            [Parameter(Mandatory)] [string] $Name,        # 'glua_check' | 'glua_ls' | 'emmylua_doc_cli'
+            [Parameter(Mandatory)] [string] $Name,        # 'glua_check' | 'glua_ls' | 'glua_doc_cli'
             [Parameter(Mandatory)] [string] $Dest,        # versioned dir
             [Parameter(Mandatory)] [string] $Repo,        # 'owner/repo'
             [Parameter(Mandatory)] [string] $Version
@@ -130,10 +133,11 @@ function Initialize-GmodTools {
     $gluaCheckExe = Install-Binary -Name 'glua_check' -Dest $GluaCheckDir -Repo 'Pollux12/gmod-glua-ls' -Version $GluaLsVersion
     $gluaLsExe    = Install-Binary -Name 'glua_ls'    -Dest $GluaLsDir    -Repo 'Pollux12/gmod-glua-ls' -Version $GluaLsVersion
 
-    # emmylua_doc_cli - the type-model CLI (wiki generator + typing gate) -----
-    $emmyDocExe = $null
+    # glua_doc_cli - the type-model CLI (wiki generator + typing gate). Self-hosted:
+    # built from Pollux's source and published as a `glua_doc_cli-<ver>` release here.
+    $gluaDocExe = $null
     if ($wantTypeModel) {
-        $emmyDocExe = Install-Binary -Name 'emmylua_doc_cli' -Dest $EmmyDocDir -Repo 'EmmyLuaLs/emmylua-analyzer-rust' -Version $EmmyDocVersion
+        $gluaDocExe = Install-Binary -Name 'glua_doc_cli' -Dest $GluaDocCliDir -Repo 'AmyJeanes/gmod-addon-tools' -Version "glua_doc_cli-$GluaDocCliVersion"
     }
 
     # MoonSharp - the headless harness interpreter. A .nupkg (zip) rather than a
@@ -240,15 +244,15 @@ function Initialize-GmodTools {
     }
 
     if ($wantTypeModel) {
-        # emmylua_doc_cli mirror - a one-shot CLI (not held open like the LSP server),
+        # glua_doc_cli mirror - a one-shot CLI (not held open like the LSP server),
         # so a plain copy is safe; its own marker tracks the independent version.
-        $emmyDocBin  = Join-Path $BinDir "emmylua_doc_cli$ExeExt"
-        $emmyDocMark = Join-Path $BinDir '.emmydoc-version'
-        $curEmmyMark = if (Test-Path $emmyDocMark) { (Get-Content $emmyDocMark -Raw).Trim() } else { '' }
-        if ($curEmmyMark -ne $EmmyDocVersion -or -not (Test-Path $emmyDocBin)) {
+        $gluaDocBin  = Join-Path $BinDir "glua_doc_cli$ExeExt"
+        $gluaDocMark = Join-Path $BinDir '.gluadoc-version'
+        $curDocMark  = if (Test-Path $gluaDocMark) { (Get-Content $gluaDocMark -Raw).Trim() } else { '' }
+        if ($curDocMark -ne $GluaDocCliVersion -or -not (Test-Path $gluaDocBin)) {
             New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
-            Copy-Item $emmyDocExe $emmyDocBin -Force
-            Set-Content -Path $emmyDocMark -Value $EmmyDocVersion
+            Copy-Item $gluaDocExe $gluaDocBin -Force
+            Set-Content -Path $gluaDocMark -Value $GluaDocCliVersion
         }
     }
 
@@ -268,8 +272,8 @@ function Initialize-GmodTools {
     Write-Host 'Tools ready:'
     Write-Host "  glua_check      $GluaLsVersion  -> $gluaCheckExe"
     Write-Host "  glua_ls         $GluaLsVersion  -> $gluaLsExe"
-    if ($emmyDocExe) {
-        Write-Host "  emmylua_doc_cli $EmmyDocVersion -> $emmyDocExe"
+    if ($gluaDocExe) {
+        Write-Host "  glua_doc_cli    $GluaDocCliVersion  -> $gluaDocExe"
     }
     if ($moonSharpDll) {
         Write-Host "  MoonSharp       $MoonSharpVersion       -> $moonSharpDll"
