@@ -16,8 +16,7 @@ function Invoke-WikiGen {
         [hashtable]   $IdentityFields = @{},
         [hashtable]   $ExternalTypeLinks = @{},
         [hashtable[]] $ExternalTypeSources = @(),
-        [switch]      $Check,
-        [switch]      $Strict
+        [switch]      $Check
     )
 
 $ErrorActionPreference = "Stop"
@@ -934,34 +933,6 @@ function Build-HooksBlock($cat) {
     return $sb.ToString().TrimEnd()
 }
 
-# Hard gate: every fired hook must resolve a receiver (bus hooks) and a type for
-# each non-literal argument. A genuinely dynamic value is annotated `---@param x any`
-# (which hovers as exactly `any`) and accepted; anything still unresolved (`any?`,
-# `unknown`, or nothing) fails generation, so the gap gets typed at the source
-# rather than silently shipping an untyped entry.
-function Assert-HookTypesResolved($model) {
-    $gaps = [System.Collections.Generic.List[object]]::new()
-    foreach ($h in @($model)) {
-        $loc = "$($h.SourceFile):$($h.SourceLine)"
-        if ($h.System -eq 'bus' -and @($h.FiredOn).Count -eq 0) {
-            $gaps.Add([pscustomobject]@{ Name = $h.Name; Loc = $loc; Detail = 'receiver type unresolved' })
-        }
-        foreach ($a in @($h.Args)) {
-            if ($a.IsLiteral -or (Test-HookTypeResolved $a.Type) -or ($a.Type -eq 'any')) { continue }
-            $what = if ($a.Type) { "'$($a.Type)'" } else { 'no type' }
-            $gaps.Add([pscustomobject]@{ Name = $h.Name; Loc = $loc; Detail = "argument '$($a.Display)' is $what" })
-        }
-    }
-    if ($gaps.Count -eq 0) { return }
-    Write-Host ""
-    Write-Host "Hook reference blocked: $($gaps.Count) unresolved type(s)." -ForegroundColor Red
-    Write-Host "Type each at the source, or mark a genuinely dynamic value with ---@param x any:"
-    $locWidth = ($gaps | ForEach-Object { $_.Loc.Length } | Measure-Object -Maximum).Maximum
-    foreach ($g in $gaps) { Write-Host ("  {0,-34}{1}  {2}" -f $g.Name, $g.Loc.PadRight($locWidth), $g.Detail) }
-    Write-Host ""
-    throw "Hook reference has $($gaps.Count) unresolved type(s) - see the list above."
-}
-
 # --- Convar pages (Kind = 'convars') -----------------------------------------
 # A convars category renders the convars and console commands an addon registers
 # (from Get-ConVarModel - a union of a static scan and a dual-realm headless run).
@@ -1359,9 +1330,6 @@ $hookModel = $null
 if ($Categories | Where-Object { $_.Kind -eq 'hooks' }) {
     Write-Host "Resolving fired hooks via glua_ls..."
     $hookModel = Get-HookModel -RepoRoot $RepoRoot
-    # -Strict turns unresolved hook types into a generation failure; without it they
-    # render as bare names (a visible, non-blocking prompt to type them at the source).
-    if ($Strict) { Assert-HookTypesResolved $hookModel }
 }
 
 # The convar/concommand model (static scan + dual-realm headless run), only if a
