@@ -897,16 +897,27 @@ function Build-HookSection([string]$title, [string]$subtitle, $rows, [string]$th
         [void]$sb.AppendLine("|-|-|")
     }
     foreach ($h in ($rows | Sort-Object Name)) {
-        $sig = "$(Render-HookName $h)($(Render-HookArgs $h.Args $thisPage))"
-        $realm = Format-Realm $h.Realm
+        $firedOn = $null
         if ($showFiredOn) {
             $firedOn =
                 if ($h.IsCommon -and $commonEntities.Count) { ($commonEntities | ForEach-Object { Render-Type $_ $thisPage }) -join ' / ' }
                 elseif (@($h.FiredOn).Count) { (@($h.FiredOn) | ForEach-Object { Render-Type $_ $thisPage }) -join ' / ' }
                 else { '_Unknown (missing type info)_' }
-            [void]$sb.AppendLine("| $sig | $realm | $firedOn |")
-        } else {
-            [void]$sb.AppendLine("| $sig | $realm |")
+        }
+        # A hook whose client and server fire sites pass different args renders one row per
+        # realm (each with its own signature + source link); a uniform hook renders one row.
+        $variants = if (@($h.RealmSignatures).Count -gt 1) { $h.RealmSignatures } else {
+            @([pscustomobject]@{ Realm = $h.Realm; Args = $h.Args; SourceFile = $h.SourceFile; SourceLine = $h.SourceLine })
+        }
+        foreach ($v in $variants) {
+            $named = [pscustomobject]@{ Name = $h.Name; SourceFile = $v.SourceFile; SourceLine = $v.SourceLine }
+            $sig = "$(Render-HookName $named)($(Render-HookArgs $v.Args $thisPage))"
+            $realm = Format-Realm $v.Realm
+            if ($showFiredOn) {
+                [void]$sb.AppendLine("| $sig | $realm | $firedOn |")
+            } else {
+                [void]$sb.AppendLine("| $sig | $realm |")
+            }
         }
     }
     [void]$sb.AppendLine()

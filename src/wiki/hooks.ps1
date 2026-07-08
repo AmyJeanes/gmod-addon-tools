@@ -230,6 +230,35 @@ function Merge-HookRealm($realms) {
     return ($d -join '/')
 }
 
+# The canonical fire site of a set: most type-resolved args, then most args, then most
+# real-identifier args (named params over arg1/arg2), then a stable File/Line tie-break.
+# The last two matter because file-scan order differs Windows vs Linux - without them local
+# and CI pick different sites and the committed wiki churns.
+function Select-BestHookSite($sites) {
+    return $sites | Sort-Object `
+        @{ Expression = { ($_.Args | Where-Object { Test-HookTypeResolved $_.Type }).Count }; Descending = $true }, `
+        @{ Expression = { $_.Args.Count }; Descending = $true }, `
+        @{ Expression = { ($_.Args | Where-Object { $_.Display -match '^[A-Za-z_]\w*$' -and $_.Display -notin @('nil', 'true', 'false') }).Count }; Descending = $true }, `
+        @{ Expression = { $_.File } }, `
+        @{ Expression = { $_.Line } } | Select-Object -First 1
+}
+
+# A signature key for comparing a hook's fire sites across realms: the arg COUNT. A realm
+# splits out only when it fires the hook with a different NUMBER of args - the real footgun
+# (a client `net.Receive` firing `PlayerEnter()` with none while the server passes `ply,
+# notp`). Count is purely syntactic, so the split is deterministic and never churns the
+# auto-committed wiki on glua_ls type-resolution differences (Windows vs Linux). Same-arity
+# type differences - an under-typed `any` net-read, or Player vs its Entity supertype - stay
+# one merged row, which reads as the (richest) shared signature rather than realm noise.
+function Get-HookSigKey($hookArgs) {
+    return [string]@($hookArgs).Count
+}
+
+# Row order for a realm-split hook: server, then client, then shared/other. Deterministic.
+function Get-HookRealmRank([string]$realm) {
+    switch ($realm) { 'server' { 0 } 'client' { 1 } 'shared' { 2 } default { 3 } }
+}
+
 function Resolve-GluaLs([string]$repoRoot) {
     $exe = if ($IsWindows -or ($null -eq $IsWindows -and $env:OS -eq 'Windows_NT')) { 'glua_ls.exe' } else { 'glua_ls' }
     return (Join-Path $repoRoot ".tools/bin/$exe")
@@ -352,18 +381,30 @@ function Get-HookModel {
     # --- reconcile ---
     $hooks = foreach ($g in ($fires | Group-Object System, Name)) {
         $sites = $g.Group
-        # Pick the canonical fire site: most type-resolved args, then most args, then most
-        # real-identifier args (so callers get named params over arg1/arg2), then a stable
-        # File/Line tie-break. Without the last two, ties are broken by file-scan order, which
-        # differs Windows vs Linux - so local and CI would pick different sites and churn.
-        $best = $sites | Sort-Object `
-            @{ Expression = { ($_.Args | Where-Object { Test-HookTypeResolved $_.Type }).Count }; Descending = $true }, `
-            @{ Expression = { $_.Args.Count }; Descending = $true }, `
-            @{ Expression = { ($_.Args | Where-Object { $_.Display -match '^[A-Za-z_]\w*$' -and $_.Display -notin @('nil', 'true', 'false') }).Count }; Descending = $true }, `
-            @{ Expression = { $_.File } }, `
-            @{ Expression = { $_.Line } } | Select-Object -First 1
+        $best = Select-BestHookSite $sites
         $recvTypes = @($sites | Where-Object { Test-HookTypeResolved $_.RecvType } | Select-Object -ExpandProperty RecvType -Unique)
         if ($recvTypes.Count -gt 1 -and $recvTypes -contains 'Entity') { $recvTypes = @($recvTypes | Where-Object { $_ -ne 'Entity' }) }
+
+        # Realm signatures: bucket the sites by realm, collapse each realm to its best site,
+        # then group those by signature. When every realm passes the same args this is a
+        # single entry (rendered as one merged row, unchanged); when a realm diverges - e.g. a
+        # client `net.Receive` fires the hook with no args while the server passes some - each
+        # distinct signature becomes its own entry so the wiki shows the real per-realm shape.
+        $realmBest = foreach ($rb in ($sites | Group-Object Realm)) {
+            $b = Select-BestHookSite $rb.Group
+            [pscustomobject]@{ Realm = $rb.Name; Best = $b; Sig = (Get-HookSigKey $b.Args) }
+        }
+        $realmSignatures = foreach ($sg in ($realmBest | Group-Object Sig)) {
+            $rep = $sg.Group | Sort-Object { Get-HookRealmRank $_.Realm } | Select-Object -First 1
+            [pscustomobject]@{
+                Realm      = Merge-HookRealm @($sg.Group.Realm)
+                Args       = $rep.Best.Args
+                SourceFile = $rep.Best.File
+                SourceLine = $rep.Best.Line
+            }
+        }
+        $realmSignatures = @($realmSignatures | Sort-Object @{ Expression = { Get-HookRealmRank $_.Realm } }, SourceFile, SourceLine)
+
         [pscustomobject]@{
             System     = $sites[0].System
             Name       = $sites[0].Name
@@ -375,6 +416,9 @@ function Get-HookModel {
             Args       = $best.Args
             SourceFile = $best.File
             SourceLine = $best.Line
+            # One entry when all realms pass the same args (renders as a single merged row);
+            # multiple when a realm's signature diverges (one wiki row per realm).
+            RealmSignatures = @($realmSignatures)
         }
     }
     return @($hooks)
