@@ -20,6 +20,100 @@ function Get-HookRealm([string]$file) {
     return 'shared'
 }
 
+# Strip comments and string contents so Lua block keywords inside them are not counted
+# by the block-guard tracker. Multi-line block-comment / long-string state carries via
+# [ref]$inBlock.
+function Get-StrippedLuaLine([string]$line, [ref]$inBlock) {
+    $sb = New-Object System.Text.StringBuilder
+    $i = 0; $n = $line.Length
+    while ($i -lt $n) {
+        $c = $line[$i]
+        if ($inBlock.Value) {
+            if ($c -eq ']' -and $i + 1 -lt $n -and $line[$i + 1] -eq ']') { $inBlock.Value = $false; $i += 2 } else { $i++ }
+            continue
+        }
+        if ($c -eq '-' -and $i + 1 -lt $n -and $line[$i + 1] -eq '-') {
+            if ($i + 3 -lt $n -and $line[$i + 2] -eq '[' -and $line[$i + 3] -eq '[') { $inBlock.Value = $true; $i += 4; continue }
+            break  # line comment to EOL
+        }
+        if ($c -eq '"' -or $c -eq "'") {
+            $q = $c; $i++
+            while ($i -lt $n) { if ($line[$i] -eq '\') { $i += 2; continue } if ($line[$i] -eq $q) { $i++; break } $i++ }
+            [void]$sb.Append(' ')
+            continue
+        }
+        [void]$sb.Append($c); $i++
+    }
+    return $sb.ToString()
+}
+
+# Per-line effective realm (0-indexed) for a file. A hook fired inside `if SERVER/CLIENT
+# then ... [else] ... end`, or after an `if SERVER/CLIENT then return end`, takes that
+# realm rather than the file-prefix one - a shared file often wraps whole modules in a
+# realm guard. Uses a lightweight Lua block-guard stack (only `if SERVER|CLIENT` conditions
+# carry a realm; every other block just tracks depth). `else` flips the current guard;
+# `elseif` and multi-line conditions fall back to inherit. If the stack does not balance to
+# empty by EOF (a construct we can't parse), the whole file reverts to the file realm - we
+# narrow only where the parse is provably sound.
+function Get-HookLineRealms([string[]]$lines, [string]$fileRealm) {
+    $realms = New-Object 'string[]' $lines.Count
+    $stack = New-Object System.Collections.Generic.List[object]   # each: @{ Realm } ($null = inherit)
+    $baseRealm = $fileRealm
+    $inBlock = $false
+    $pendingCond = $null   # 'if'|'elseif'|$null - condition open across lines
+
+    for ($li = 0; $li -lt $lines.Count; $li++) {
+        $ir = [ref]$inBlock
+        $s = Get-StrippedLuaLine $lines[$li] $ir
+        $inBlock = $ir.Value
+
+        # realm at this line = nearest non-null frame, else base (before this line's changes)
+        $eff = $baseRealm
+        for ($k = $stack.Count - 1; $k -ge 0; $k--) { if ($stack[$k].Realm) { $eff = $stack[$k].Realm; break } }
+        $realms[$li] = $eff
+
+        # early-return narrowing: `if [not] SERVER|CLIENT then return end` (block-balanced)
+        $er = [regex]::Match($s, '^\s*if\s+(not\s+)?(SERVER|CLIENT)\s+then\s+return\s+end\b')
+        if ($er.Success) {
+            $isNot = $er.Groups[1].Value.Trim() -eq 'not'
+            $c2 = $er.Groups[2].Value
+            $rest = if ($c2 -eq 'SERVER') { if ($isNot) { 'server' } else { 'client' } } else { if ($isNot) { 'client' } else { 'server' } }
+            if ($stack.Count) { $stack[$stack.Count - 1].Realm = $rest } else { $baseRealm = $rest }
+            continue
+        }
+
+        foreach ($m in [regex]::Matches($s, '\b(function|elseif|if|then|do|repeat|until|end|else|while|for)\b')) {
+            switch ($m.Value) {
+                'function' { $stack.Add(@{ Realm = $null }); $pendingCond = $null }
+                'repeat'   { $stack.Add(@{ Realm = $null }); $pendingCond = $null }
+                'do'       { $stack.Add(@{ Realm = $null }); $pendingCond = $null }
+                'while'    { }   # opener is its `do`
+                'for'      { }   # opener is its `do`
+                'if'       { $pendingCond = 'if' }
+                'elseif'   { $pendingCond = 'elseif'; if ($stack.Count) { $stack[$stack.Count - 1].Realm = $null } }
+                'then' {
+                    if ($pendingCond -eq 'elseif') { $pendingCond = $null; break }   # continuation, no open
+                    $pendingCond = $null
+                    $pre = $s.Substring(0, $m.Index)
+                    $cond = ([regex]::Match($pre, '\bif\b(?<cond>[^;]*?)$').Groups['cond'].Value).Trim()
+                    $r = if ($cond -eq 'SERVER') { 'server' } elseif ($cond -eq 'CLIENT') { 'client' } else { $null }
+                    $stack.Add(@{ Realm = $r })
+                }
+                'else' {
+                    if ($stack.Count) {
+                        $cur = $stack[$stack.Count - 1].Realm
+                        $stack[$stack.Count - 1].Realm = if ($cur -eq 'server') { 'client' } elseif ($cur -eq 'client') { 'server' } else { $null }
+                    }
+                }
+                'end'   { if ($stack.Count) { $stack.RemoveAt($stack.Count - 1) } }
+                'until' { if ($stack.Count) { $stack.RemoveAt($stack.Count - 1) } }
+            }
+        }
+    }
+    if ($stack.Count -ne 0) { for ($k = 0; $k -lt $realms.Count; $k++) { $realms[$k] = $fileRealm } }
+    return $realms
+}
+
 # Split a call's top-level, comma-separated arguments starting at the '(' index.
 # Respects nested (), [], {} and string literals. Returns each segment's text and
 # its 0-based start offset in the line (best-effort for single-line calls).
@@ -124,9 +218,9 @@ function Get-HookModel {
         Where-Object { $_.FullName -notmatch '[\\/]gmod_wire_expression2[\\/]' }
 
     foreach ($f in $files) {
-        $realm = Get-HookRealm $f.FullName
         $rel = $f.FullName.Substring($RepoRoot.Length + 1) -replace '\\', '/'
         $lines = [System.IO.File]::ReadAllLines($f.FullName)
+        $lineRealms = Get-HookLineRealms $lines (Get-HookRealm $f.FullName)
         for ($li = 0; $li -lt $lines.Count; $li++) {
             $line = $lines[$li]
             if ($line -notmatch $reAny) { continue }
@@ -163,7 +257,7 @@ function Get-HookModel {
 
                     $fires.Add([pscustomobject]@{
                         System = $sys; Name = $hookName; Method = $mt.Groups['m'].Value
-                        Realm = $realm; File = $rel; Line = ($li + 1)
+                        Realm = $lineRealms[$li]; File = $rel; Line = ($li + 1)
                         RecvCol = $recvCol; RecvType = $null; Args = $args
                     })
                 }
