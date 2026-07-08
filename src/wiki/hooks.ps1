@@ -9,6 +9,38 @@
 # as the source gets typed. Returns a flat list of hook rows; the wiki generator
 # renders and type-links them (reusing Render-Type).
 
+# `self` in an entity/weapon method is definitionally that class, so resolve it from the
+# folder convention (lua/entities|weapons/<class>/) rather than a glua_ls hover - the hover
+# can miss it inside a complex expression (e.g. `elseif a or hook.Call(...,self,...)`).
+function Get-FileEntityClass([string]$rel) {
+    $m = [regex]::Match(($rel -replace '\\', '/'), '(?:^|/)lua/(?:entities|weapons)/([^/]+)/')
+    if ($m.Success) { return $m.Groups[1].Value }
+    return $null
+}
+
+# Fallback for a bare-identifier arg glua_ls fails to hover: it sometimes won't resolve a
+# typed function param inside a complex expression, even though the ---@param is right there
+# (and glua_doc_cli + the param gate see it fine). Scan up to the nearest function signature
+# that declares $argName as a param, then read that param's ---@param type - the same
+# authoritative annotation the analyzer uses. Only reached when the hover already failed, so
+# a miss just leaves the arg unresolved (never a wrong type on a resolved one).
+function Get-EnclosingParamType([string[]]$lines, [int]$fireLine0, [string]$argName) {
+    for ($i = [Math]::Min($fireLine0, $lines.Count - 1); $i -ge 0; $i--) {
+        $fm = [regex]::Match($lines[$i], '\bfunction\b[^(]*\(([^)]*)\)')
+        if (-not $fm.Success) { continue }
+        $params = @($fm.Groups[1].Value -split ',' | ForEach-Object { $_.Trim() })
+        if ($params -notcontains $argName) { return $null }   # nearest fn doesn't own this name
+        for ($j = $i - 1; $j -ge 0; $j--) {
+            $s = $lines[$j].Trim()
+            if ($s -match "^---?@param\s+$([regex]::Escape($argName))\??\s+(\S+)") { return $Matches[1] }
+            if ($s -eq '' -or $s.StartsWith('--')) { continue }
+            break   # reached code above the doc block
+        }
+        return $null
+    }
+    return $null
+}
+
 function Get-HookRealm([string]$file) {
     $n = [System.IO.Path]::GetFileName($file).ToLower()
     if ($n -eq 'cl_init.lua') { return 'client' }
@@ -163,12 +195,12 @@ function Get-HookArgToken([string]$segText, [int]$startIdx0) {
     $mm = [regex]::Matches($segText, '[A-Za-z_][A-Za-z0-9_]*')
     if ($mm.Count -eq 0) { return @{ Display = $trim; IsLiteral = $false; HoverCol = $null } }
     $last = $mm[$mm.Count - 1]
-    # A call expression (foo(), self:Get()) - hovering the last identifier resolves the
-    # function, not its return type, so leave it unresolved rather than emit a bogus type.
-    if ($segText.Substring($last.Index + $last.Length).TrimStart().StartsWith('(')) {
-        return @{ Display = $trim; IsLiteral = $false; HoverCol = $null }
-    }
-    return @{ Display = $trim; IsLiteral = $false; HoverCol = ($startIdx0 + $last.Index + 1) }
+    # A call expression (foo(), self:Get()) hovers the method identifier - which gives its
+    # signature, not the call's value - so mark IsCall and pull the RETURN type from that
+    # hover instead. Works for any receiver (self:, a typed local, a namespace) since it
+    # reads the method's own return, not the receiver.
+    $isCall = $segText.Substring($last.Index + $last.Length).TrimStart().StartsWith('(')
+    return @{ Display = $trim; IsLiteral = $false; HoverCol = ($startIdx0 + $last.Index + 1); IsCall = $isCall }
 }
 
 function Get-HookLastIdentCol([string]$expr, [int]$startIdx0) {
@@ -296,12 +328,20 @@ function Get-HookModel {
                     Start-Sleep -Milliseconds 500
                 }
             }
+            $fileLines = @{}
             foreach ($fire in $fires) {
                 $full = Join-Path $RepoRoot $fire.File
+                $entClass = Get-FileEntityClass $fire.File
                 if ($fire.RecvCol) { $fire.RecvType = Get-LspHoverType $srv $full $fire.Line $fire.RecvCol 3 }
                 foreach ($a in $fire.Args) {
                     if ($a.IsLiteral) { $a.Type = $a.LitType; continue }
-                    $a.Type = if ($a.HoverCol) { Get-LspHoverType $srv $full $fire.Line $a.HoverCol 3 } else { '' }
+                    if ($a.Display -eq 'self' -and $entClass) { $a.Type = $entClass; continue }
+                    $a.Type = if ($a.HoverCol) { Get-LspHoverType $srv $full $fire.Line $a.HoverCol 3 -Return:([bool]$a.IsCall) } else { '' }
+                    if ((Test-HookTypeUnknown $a.Type) -and $a.Display -match '^[A-Za-z_]\w*$') {
+                        if (-not $fileLines.ContainsKey($fire.File)) { $fileLines[$fire.File] = [System.IO.File]::ReadAllLines($full) }
+                        $pt = Get-EnclosingParamType $fileLines[$fire.File] ($fire.Line - 1) $a.Display
+                        if ($pt) { $a.Type = $pt }
+                    }
                 }
             }
         } finally { Stop-LspServer $srv }

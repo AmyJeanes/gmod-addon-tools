@@ -127,7 +127,7 @@ function Stop-LspServer($server) {
 # Hover the token at (1-based) line/char and return the resolved type string, or
 # '' when the analyzer has no concrete type. Retries while the server is still
 # indexing (it answers hovers with an error until the workspace is loaded).
-function Get-LspHoverType($server, [string]$filePath, [int]$line, [int]$char, [int]$retries = 60) {
+function Get-LspHoverType($server, [string]$filePath, [int]$line, [int]$char, [int]$retries = 60, [switch]$Return) {
     $params = @{
         textDocument = @{ uri = (ConvertTo-FileUri $filePath) }
         position     = @{ line = ($line - 1); character = ($char - 1) }
@@ -143,6 +143,13 @@ function Get-LspHoverType($server, [string]$filePath, [int]$line, [int]$char, [i
         if ($result.contents -is [string]) { $value = $result.contents }
         elseif (Test-LspProp $result.contents 'value') { $value = $result.contents.value }
         if (-not $value) { return '' }
+        # A call expression's type is the hovered method's RETURN, shown as `-> Type` in
+        # the signature. Take the last `->` so a `fun(...) -> x` param doesn't shadow it.
+        if ($Return) {
+            $rm = [regex]::Matches($value, '->\s*`?([^\n`]+?)`?\s*(?:\r?\n|$)')
+            if ($rm.Count) { return ($rm[$rm.Count - 1].Groups[1].Value.Trim()) }
+            return ''
+        }
         foreach ($ln in ($value -split "`n")) {
             if ($ln -match '(?:local|global|param)?\s*[\w]+\s*:\s*(\S+)') {
                 return ($Matches[1].TrimEnd('{', ',').Trim())
