@@ -147,7 +147,12 @@ function Get-LspHoverType($server, [string]$filePath, [int]$line, [int]$char, [i
         # the signature. Take the last `->` so a `fun(...) -> x` param doesn't shadow it.
         if ($Return) {
             $rm = [regex]::Matches($value, '->\s*`?([^\n`]+?)`?\s*(?:\r?\n|$)')
-            if ($rm.Count) { return ($rm[$rm.Count - 1].Groups[1].Value.Trim()) }
+            if ($rm.Count) {
+                # glua_ls renders a class return with its base inline ("Player : Entity"); the
+                # " : Base" suffix is invalid in a type position (no other EmmyLua type form
+                # uses a top-level " : "), so keep just the class name.
+                return (($rm[$rm.Count - 1].Groups[1].Value -split '\s+:\s+', 2)[0].Trim())
+            }
             return ''
         }
         foreach ($ln in ($value -split "`n")) {
