@@ -183,6 +183,14 @@ function Test-HookTypeResolved([string]$t) {
     return ($t.TrimEnd('?')) -notin @('any', 'unknown', 'nil', 'void', '')
 }
 
+# A genuine "no type info" gap - renders as _unknown_. Distinct from `any`, which is a
+# real, deliberate type (---@param x any, or a resolved dynamic value) and renders as
+# `any`. So `any` is neither "resolved" (not a linkable class) nor "unknown" (a gap).
+function Test-HookTypeUnknown([string]$t) {
+    if (-not $t) { return $true }
+    return ($t.TrimEnd('?')) -in @('unknown', 'nil', 'void', '')
+}
+
 function Merge-HookRealm($realms) {
     $d = @($realms | Select-Object -Unique)
     if ($d.Count -eq 1) { return $d[0] }

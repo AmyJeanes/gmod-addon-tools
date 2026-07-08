@@ -861,8 +861,8 @@ function Render-HookArgs($hookArgs, [string]$thisPage) {
     $parts = foreach ($a in $list) {
         $disp = '`' + (Format-Cell $a.Display) + '`'
         if ($a.IsLiteral) { $disp }                                                          # value speaks for itself
-        elseif (Test-HookTypeResolved $a.Type) { "${disp}: $(Render-Type $a.Type $thisPage)" }
-        else { "${disp}: _unknown_" }                                                        # untyped at source - type it later
+        elseif (Test-HookTypeUnknown $a.Type) { "${disp}: _unknown_" }                       # no type info - type it at source
+        else { "${disp}: $(Render-Type $a.Type $thisPage)" }                                 # a concrete class, or a deliberate `any`
     }
     return ($parts -join ', ')
 }
@@ -1171,11 +1171,11 @@ function Render-FunctionArgs($params, [string]$thisPage) {
     $parts = foreach ($p in $list) {
         $disp = '`' + (Format-Cell $p.Name) + '`'
         # A vararg is inherently variadic - render it bare, never `...`: _unknown_.
-        # An explicit `any` is a real (if broad) type - render it, don't call it unknown;
+        # `any` (incl. `any?`) is a real, deliberate type - render it, don't call it unknown;
         # only a genuinely untyped param falls through to the _unknown_ "type me" marker.
         if ($p.Name -eq '...') { $disp }
-        elseif ((Test-HookTypeResolved $p.Type) -or ($p.Type -eq 'any')) { "${disp}: $(Render-Type $p.Type $thisPage)" }
-        else { "${disp}: _unknown_" }
+        elseif (Test-HookTypeUnknown $p.Type) { "${disp}: _unknown_" }
+        else { "${disp}: $(Render-Type $p.Type $thisPage)" }
     }
     return ($parts -join ', ')
 }
