@@ -47,9 +47,11 @@ function Test-ConcreteType([string]$typ) {
     return $b -notin @('any', 'unknown', 'nil', 'null', 'void', '')
 }
 
-# "relpath:line" -> the analyzer's resolved params for every fn it models (class
-# methods, namespace/global fns). loc.line is the `function` keyword line, which is
-# the same line the source scanner keys on, so the two reconcile by (file, line).
+# "relpath:line" -> per-fn model @{ Params; Returns; Api; Name } for every fn the
+# analyzer resolves (class methods, namespace/global fns). loc.line is the `function`
+# keyword line, the same line the source scanner keys on, so the two reconcile by
+# (file, line). Params drive the untyped-param rescue; Returns/Api drive the
+# unknown-return gate.
 function Get-EmmyFnModel([string]$RepoRoot, [string]$LuaRoot) {
     $model = @{}
     $docCli = Resolve-TypingDocCli $RepoRoot
@@ -79,7 +81,15 @@ function Get-EmmyFnModel([string]$RepoRoot, [string]$LuaRoot) {
             $rel = $abs.Substring($rootFwd.Length).TrimStart('/')
             $params = @{}
             foreach ($p in @($m.params)) { $params[$p.name] = [string]$p.typ }
-            $model["${rel}:$($m.loc.line)"] = $params
+            $returns = @()
+            foreach ($r in @($m.returns)) { $rt = if ($r -is [string]) { $r } elseif ($r.typ) { $r.typ } else { '' }; if ($rt) { $returns += $rt } }
+            $sep = if ($m.is_meth) { ':' } else { '.' }
+            $model["${rel}:$($m.loc.line)"] = @{
+                Params  = $params
+                Returns = $returns
+                Api     = (@($m.tag_content | Where-Object { $_.tag_name -eq 'api' }).Count -gt 0)
+                Name    = "$($t.name)$sep$($m.name)"
+            }
         }
     }
     return $model
@@ -268,10 +278,11 @@ function Get-FileUntyped([string]$path, [string]$rel, [hashtable]$ctx) {
         if ($ann.HasFun) { continue }
 
         $emmy = $ctx.EmmyModel["${rel}:$($i + 1)"]
+        $ep = if ($emmy) { $emmy.Params } else { $null }
         $untyped = @()
         foreach ($p in $params) {
-            if ($ann.Typed.Contains($p)) { continue }                                            # explicit ---@param <type> (incl. `any`)
-            if ($emmy -and $emmy.ContainsKey($p) -and (Test-ConcreteType $emmy[$p])) { continue } # inheritance/inference rescue
+            if ($ann.Typed.Contains($p)) { continue }                                        # explicit ---@param <type> (incl. `any`)
+            if ($ep -and $ep.ContainsKey($p) -and (Test-ConcreteType $ep[$p])) { continue }   # inheritance/inference rescue
             $untyped += $p
         }
         if ($untyped.Count) {
@@ -351,8 +362,30 @@ function Get-GmodParamMismatch([string]$RepoRoot, [hashtable]$Context) {
     return $findings
 }
 
-# The gate. Returns @{ Ok; Untyped; Mismatch } and prints a readable report.
-# Ok is false when any untyped param remains or any STALE/DUP/OVER mismatch exists.
+# @api functions whose analyzer-resolved return contains `unknown` - a value the
+# analyzer couldn't type at all. A void fn resolves to `nil` (not flagged, since
+# glua_doc_cli models "no return" as nil), and any ---@return (a concrete type or the
+# deliberate `any` escape) moves the type off `unknown`, so this gate is @api-scoped
+# and self-escaping. A nested unknown (an inferred struct field) counts too.
+function Get-GmodUnknownReturns([string]$RepoRoot, [hashtable]$Context) {
+    $ctx = if ($Context) { $Context } else { Get-TypingContext $RepoRoot }
+    $findings = @()
+    foreach ($key in $ctx.EmmyModel.Keys) {
+        $fn = $ctx.EmmyModel[$key]
+        if (-not $fn.Api) { continue }
+        if (-not @($fn.Returns | Where-Object { $_ -match '\bunknown\b' }).Count) { continue }
+        $ci = $key.LastIndexOf(':')
+        $findings += [pscustomobject]@{
+            Name = $fn.Name; Return = ($fn.Returns -join ', ')
+            File = $key.Substring(0, $ci); Line = $key.Substring($ci + 1)
+        }
+    }
+    return $findings
+}
+
+# The gate. Returns @{ Ok; Untyped; Mismatch; UnknownReturns } and prints a readable
+# report. Ok is false when any untyped param, STALE/DUP/OVER mismatch, or unknown @api
+# return remains.
 function Test-GmodTyping {
     [CmdletBinding()]
     param(
@@ -362,7 +395,8 @@ function Test-GmodTyping {
     $ctx = Get-TypingContext $RepoRoot
     $untyped = @(Get-GmodUntypedParams $ctx.RepoRoot $ctx)
     $mismatch = @(Get-GmodParamMismatch $ctx.RepoRoot $ctx | Where-Object { $_.Severity -in @('STALE', 'DUP', 'OVER') })
-    $ok = ($untyped.Count -eq 0) -and ($mismatch.Count -eq 0)
+    $unknownReturns = @(Get-GmodUnknownReturns $ctx.RepoRoot $ctx)
+    $ok = ($untyped.Count -eq 0) -and ($mismatch.Count -eq 0) -and ($unknownReturns.Count -eq 0)
 
     if (-not $Quiet) {
         Write-Host ""
@@ -384,7 +418,16 @@ function Test-GmodTyping {
             Write-Host "Type each param, or mark a genuinely dynamic one ``---@param x any``; opt a vendored file out with ``---@vendored``." -ForegroundColor Yellow
             Write-Host ""
         }
-        if ($ok) { Write-Host "Typing gate: clean (0 untyped, 0 mismatches)." -ForegroundColor Green }
+        if ($unknownReturns.Count) {
+            Write-Host "Unknown @api returns ($($unknownReturns.Count)):" -ForegroundColor Red
+            foreach ($g in ($unknownReturns | Sort-Object File, Line)) {
+                Write-Host ("  {0}:{1}  {2} -> {3}" -f $g.File, $g.Line, $g.Name, $g.Return)
+            }
+            Write-Host ""
+            Write-Host "Add a ``---@return <type>`` to each (or ``---@return any`` if it is genuinely dynamic)." -ForegroundColor Yellow
+            Write-Host ""
+        }
+        if ($ok) { Write-Host "Typing gate: clean (0 untyped, 0 mismatches, 0 unknown returns)." -ForegroundColor Green }
     }
-    return @{ Ok = $ok; Untyped = $untyped; Mismatch = $mismatch }
+    return @{ Ok = $ok; Untyped = $untyped; Mismatch = $mismatch; UnknownReturns = $unknownReturns }
 }
