@@ -362,22 +362,25 @@ function Get-GmodParamMismatch([string]$RepoRoot, [hashtable]$Context) {
     return $findings
 }
 
-# @api functions whose analyzer-resolved return contains `unknown` - a value the
-# analyzer couldn't type at all. A void fn resolves to `nil` (not flagged, since
-# glua_doc_cli models "no return" as nil), and any ---@return (a concrete type or the
-# deliberate `any` escape) moves the type off `unknown`, so this gate is @api-scoped
-# and self-escaping. A nested unknown (an inferred struct field) counts too.
+# Any modeled function (class method or namespace fn the analyzer resolves in this repo)
+# whose return contains `unknown` - a value the analyzer couldn't type at all. A void fn
+# resolves to `nil` (not flagged, since glua_doc_cli models "no return" as nil), and any
+# ---@return (a concrete type or the deliberate `any` escape) moves the type off `unknown`,
+# so the gate is self-escaping. A nested unknown (an inferred table key/field) counts too.
+# Vendored / .luarc-ignored files are skipped, matching the param gate. Not @api-scoped:
+# glua_doc_cli resolves nearly every return, so an `unknown` anywhere is a real gap.
 function Get-GmodUnknownReturns([string]$RepoRoot, [hashtable]$Context) {
     $ctx = if ($Context) { $Context } else { Get-TypingContext $RepoRoot }
     $findings = @()
     foreach ($key in $ctx.EmmyModel.Keys) {
         $fn = $ctx.EmmyModel[$key]
-        if (-not $fn.Api) { continue }
         if (-not @($fn.Returns | Where-Object { $_ -match '\bunknown\b' }).Count) { continue }
         $ci = $key.LastIndexOf(':')
+        $file = $key.Substring(0, $ci)
+        if ($ctx.Ignored.Contains($file)) { continue }
         $findings += [pscustomobject]@{
             Name = $fn.Name; Return = ($fn.Returns -join ', ')
-            File = $key.Substring(0, $ci); Line = $key.Substring($ci + 1)
+            File = $file; Line = $key.Substring($ci + 1)
         }
     }
     return $findings
@@ -419,7 +422,7 @@ function Test-GmodTyping {
             Write-Host ""
         }
         if ($unknownReturns.Count) {
-            Write-Host "Unknown @api returns ($($unknownReturns.Count)):" -ForegroundColor Red
+            Write-Host "Unknown returns ($($unknownReturns.Count)):" -ForegroundColor Red
             foreach ($g in ($unknownReturns | Sort-Object File, Line)) {
                 Write-Host ("  {0}:{1}  {2} -> {3}" -f $g.File, $g.Line, $g.Name, $g.Return)
             }
