@@ -386,26 +386,36 @@ function Get-GmodUnknownReturns([string]$RepoRoot, [hashtable]$Context) {
     return $findings
 }
 
-# Every non-literal argument a hook is fired with should resolve to a real type. Reuses
-# Get-HookModel (glua_ls resolves each fire-site expression - including a call's method
-# return type), so the gate and the rendered Hooks-Reference never disagree. A genuine
-# `unknown`/nil (not `any`, not a literal) means the passed value's source is untyped -
-# type the source, or pass a deliberate `any`. This is the one glua_ls-backed check, so
-# it costs a few seconds on the biggest repo; the param/return checks stay glua_doc_cli.
-function Get-GmodUnknownHookArgs([string]$RepoRoot) {
-    $findings = @()
+# The hook surface: every non-literal argument a hook is fired with, and every bus-hook
+# receiver, should resolve to a real type. Reuses Get-HookModel (glua_ls resolves each
+# fire-site expression - including a call's method return type), so the gate and the
+# rendered Hooks-Reference never disagree: an unknown arg renders `_unknown_`, an unknown
+# receiver renders "Fired on: Unknown (missing type info)". A genuine `unknown`/nil (not
+# `any`, not a literal) means the value's source is untyped - type it, or pass a deliberate
+# `any`. This is the one glua_ls-backed check, so it costs a few seconds on the biggest
+# repo (the param/return checks stay glua_doc_cli); both lists come from one model.
+#
+# Receivers: only bus hooks (`:CallHook`) fire on a receiver - gamemode `hook.Run` hooks
+# have none. Common hooks (`:CallCommonHook`) cascade to the ext+int entities regardless
+# of the receiver, so the wiki never shows them Unknown - skip them too.
+function Get-GmodHookSurface([string]$RepoRoot) {
+    $unknownArgs = @(); $unknownReceivers = @()
     foreach ($h in @(Get-HookModel -RepoRoot $RepoRoot)) {
         foreach ($a in @($h.Args)) {
             if ($a.IsLiteral -or -not (Test-HookTypeUnknown $a.Type)) { continue }
-            $findings += [pscustomobject]@{ Hook = $h.Name; Arg = $a.Display; File = $h.SourceFile; Line = $h.SourceLine }
+            $unknownArgs += [pscustomobject]@{ Hook = $h.Name; Arg = $a.Display; File = $h.SourceFile; Line = $h.SourceLine }
+        }
+        if ($h.System -eq 'bus' -and -not $h.IsCommon -and -not @($h.FiredOn).Count) {
+            $unknownReceivers += [pscustomobject]@{ Hook = $h.Name; File = $h.SourceFile; Line = $h.SourceLine }
         }
     }
-    return $findings
+    return @{ UnknownArgs = @($unknownArgs); UnknownReceivers = @($unknownReceivers) }
 }
 
-# The gate. Returns @{ Ok; Untyped; Mismatch; UnknownReturns; UnknownHookArgs } and prints
-# a readable report. Ok is false when any untyped param, STALE/DUP/OVER mismatch, unknown
-# return, or untyped hook argument remains.
+# The gate. Returns @{ Ok; Untyped; Mismatch; UnknownReturns; UnknownHookArgs;
+# UnknownHookReceivers } and prints a readable report. Ok is false when any untyped param,
+# STALE/DUP/OVER mismatch, unknown return, untyped hook argument, or untyped hook receiver
+# remains.
 function Test-GmodTyping {
     [CmdletBinding()]
     param(
@@ -417,8 +427,10 @@ function Test-GmodTyping {
     $mismatch = @(Get-GmodParamMismatch $ctx.RepoRoot $ctx | Where-Object { $_.Severity -in @('STALE', 'DUP', 'OVER') })
     $unknownReturns = @(Get-GmodUnknownReturns $ctx.RepoRoot $ctx)
     if (-not $Quiet) { Write-Host "Checking hook surface (glua_ls)..." -ForegroundColor DarkGray }
-    $unknownHookArgs = @(Get-GmodUnknownHookArgs $ctx.RepoRoot)
-    $ok = ($untyped.Count -eq 0) -and ($mismatch.Count -eq 0) -and ($unknownReturns.Count -eq 0) -and ($unknownHookArgs.Count -eq 0)
+    $surface = Get-GmodHookSurface $ctx.RepoRoot
+    $unknownHookArgs = @($surface.UnknownArgs)
+    $unknownHookReceivers = @($surface.UnknownReceivers)
+    $ok = ($untyped.Count -eq 0) -and ($mismatch.Count -eq 0) -and ($unknownReturns.Count -eq 0) -and ($unknownHookArgs.Count -eq 0) -and ($unknownHookReceivers.Count -eq 0)
 
     if (-not $Quiet) {
         Write-Host ""
@@ -458,7 +470,16 @@ function Test-GmodTyping {
             Write-Host "Type the value passed at each fire site (or pass a deliberate ``---@param x any``)." -ForegroundColor Yellow
             Write-Host ""
         }
-        if ($ok) { Write-Host "Typing gate: clean (0 untyped, 0 mismatches, 0 unknown returns, 0 untyped hook args)." -ForegroundColor Green }
+        if ($unknownHookReceivers.Count) {
+            Write-Host "Untyped hook receivers ($($unknownHookReceivers.Count)):" -ForegroundColor Red
+            foreach ($g in ($unknownHookReceivers | Sort-Object File, Line)) {
+                Write-Host ("  {0}:{1}  {2}" -f $g.File, $g.Line, $g.Hook)
+            }
+            Write-Host ""
+            Write-Host "Type the receiver at each fire site so ``:CallHook`` resolves - usually a ``---@param self <class>`` on the enclosing function." -ForegroundColor Yellow
+            Write-Host ""
+        }
+        if ($ok) { Write-Host "Typing gate: clean (0 untyped, 0 mismatches, 0 unknown returns, 0 untyped hook args, 0 untyped hook receivers)." -ForegroundColor Green }
     }
-    return @{ Ok = $ok; Untyped = $untyped; Mismatch = $mismatch; UnknownReturns = $unknownReturns; UnknownHookArgs = $unknownHookArgs }
+    return @{ Ok = $ok; Untyped = $untyped; Mismatch = $mismatch; UnknownReturns = $unknownReturns; UnknownHookArgs = $unknownHookArgs; UnknownHookReceivers = $unknownHookReceivers }
 }
