@@ -7,9 +7,11 @@ owns and how consumers (Doors, world-portals, TARDIS, GMod-MCP-Server, …) use 
 ## Layout
 
 - `GmodAddonTools.psd1` / `.psm1` — module manifest + loader (dot-sources `src/`).
-- `src/install.ps1` — `Install-GmodTools` (tooling provisioning; the version pins live here, once, for every consumer).
+- `src/install.ps1` — `Initialize-GmodTools` (tooling provisioning; the version pins live here, once, for every consumer).
 - `src/wiki/generate.ps1` — `Invoke-WikiGen` (the whole wiki engine).
 - `src/harness/` — `New-AddonHarness` + the MoonSharp GMod-stub prelude.
+- `src/docs/conventions.ps1` — `Sync-AddonConventions` (injects `docs/gmod-addon-conventions.md` into a consumer's CLAUDE.md between markers).
+- `docs/gmod-addon-conventions.md` — the shared cross-addon CLAUDE.md block, single source of truth for the setup / code-style / tooling / typing-gate guidance every consumer shares.
 - Consumers are sibling repos that pin this module by tag; **Doors** is the reference consumer to copy when onboarding a new one.
 
 ## Commits drive releases — use Conventional Commits

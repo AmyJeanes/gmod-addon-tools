@@ -8,6 +8,7 @@
     FunctionsToExport = @(
         'Initialize-GmodTools',
         'Sync-GmodHookTypes',
+        'Sync-AddonConventions',
         'Invoke-WikiGen',
         'Build-HookTypeCatalogue',
         'Build-GlobalHookOverloads',
