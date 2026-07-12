@@ -130,6 +130,7 @@ jobs:
           HA_WEBHOOK_URL: ${{ secrets.HA_WEBHOOK_URL }}
           NTFY_CI_PASSWORD: ${{ secrets.NTFY_CI_PASSWORD }}
           ADDON: ${{ inputs.addon }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           nonce=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
@@ -137,7 +138,7 @@ jobs:
           echo "Prompting your phone (nonce ${nonce})..."
           curl -fsS -X POST "$HA_WEBHOOK_URL" \
             -H 'Content-Type: application/json' \
-            -d "{\"addon\":\"${ADDON}\",\"sha\":\"${GITHUB_SHA}\",\"nonce\":\"${nonce}\"}"
+            -d "{\"addon\":\"${ADDON}\",\"sha\":\"${GITHUB_SHA}\",\"nonce\":\"${nonce}\",\"run_url\":\"${RUN_URL}\"}"
           echo "Waiting up to 10 minutes for the Steam Guard code (reply on your phone)..."
           deadline=$(( $(date +%s) + 600 ))
           code=""
@@ -200,18 +201,23 @@ jobs:
           echo "::group::stderr.txt"; cat "$HOME/Steam/logs/stderr.txt" 2>/dev/null || true; echo "::endgroup::"
 
       - name: Report result to Home Assistant
-        # Update the phone notification (same nonce/tag) with the outcome, so the
-        # prompt is replaced by a success/failure message instead of lingering.
-        if: always() && inputs.mfa && steps.guard.outputs.nonce != ''
+        # For mfa, always update the phone notification (same tag) with the outcome.
+        # For direct-login (beta) runs, stay silent unless the job failed - then send
+        # a standalone failure notification (tagged by run id, no prompt to replace).
+        if: always() && (inputs.mfa || failure())
         env:
           HA_WEBHOOK_URL: ${{ secrets.HA_WEBHOOK_URL }}
           ADDON: ${{ inputs.addon }}
-          NONCE: ${{ steps.guard.outputs.nonce }}
+          GUARD_NONCE: ${{ steps.guard.outputs.nonce }}
           DENIED: ${{ steps.guard.outputs.denied }}
           STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
         run: |
+          nonce="${GUARD_NONCE:-}"
+          if [ -z "$nonce" ]; then nonce="run-${RUN_ID}"; fi # beta failure has no prompt; tag by run
           status="$STATUS"
           if [ "$DENIED" = "true" ]; then status="cancelled"; fi
           curl -fsS -X POST "$HA_WEBHOOK_URL" \
             -H 'Content-Type: application/json' \
-            -d "{\"phase\":\"result\",\"addon\":\"${ADDON}\",\"nonce\":\"${NONCE}\",\"status\":\"${status}\"}" || true
+            -d "{\"phase\":\"result\",\"addon\":\"${ADDON}\",\"nonce\":\"${nonce}\",\"status\":\"${status}\",\"run_url\":\"${RUN_URL}\"}" || true
