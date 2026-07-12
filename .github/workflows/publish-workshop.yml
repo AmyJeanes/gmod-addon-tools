@@ -146,7 +146,13 @@ jobs:
               "${NTFY_URL}/${NTFY_TOPIC}/json?poll=1&since=10m" \
               | jq -r --arg n "$nonce" 'select(.event=="message") | select(.title==$n) | .message' \
               | tail -n1 || true)
-            if [ "$code" = "deny" ]; then echo "::error::Release denied on your phone."; exit 1; fi
+            if [ "$code" = "deny" ]; then
+              # Cancel is a deliberate skip, not a failure - end green with the
+              # upload skipped rather than a red run + failure email.
+              echo "Publish cancelled on your phone; skipping the upload."
+              echo "denied=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             if [ -n "$code" ]; then break; fi
             sleep 3
           done
@@ -155,6 +161,7 @@ jobs:
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
       - name: Publish to Steam Workshop
+        if: steps.guard.outputs.denied != 'true'
         # Secrets are scoped to this one step. Split login: consume the login (and,
         # for mfa, the Guard code) first, then upload with the established session.
         env:
@@ -200,8 +207,11 @@ jobs:
           HA_WEBHOOK_URL: ${{ secrets.HA_WEBHOOK_URL }}
           ADDON: ${{ inputs.addon }}
           NONCE: ${{ steps.guard.outputs.nonce }}
+          DENIED: ${{ steps.guard.outputs.denied }}
           STATUS: ${{ job.status }}
         run: |
+          status="$STATUS"
+          if [ "$DENIED" = "true" ]; then status="cancelled"; fi
           curl -fsS -X POST "$HA_WEBHOOK_URL" \
             -H 'Content-Type: application/json' \
-            -d "{\"phase\":\"result\",\"addon\":\"${ADDON}\",\"nonce\":\"${NONCE}\",\"status\":\"${STATUS}\"}" || true
+            -d "{\"phase\":\"result\",\"addon\":\"${ADDON}\",\"nonce\":\"${NONCE}\",\"status\":\"${status}\"}" || true
