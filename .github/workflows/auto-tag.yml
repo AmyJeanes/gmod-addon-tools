@@ -6,7 +6,8 @@ name: Auto-tag
 # tag becomes a Renovate PR in
 # each consumer that runs their CI before the tooling change lands - rather than
 # tracking main and breaking a later unrelated build. Docs / CI-only changes
-# don't touch these paths, so they don't cut a release.
+# don't touch these paths, so they don't cut a release - but the reusable
+# publish-workshop workflow IS consumer-pinned tooling, so it cuts a tag too.
 on:
   push:
     branches: [main]
@@ -14,6 +15,7 @@ on:
       - 'src/**'
       - 'GmodAddonTools.psd1'
       - 'GmodAddonTools.psm1'
+      - '.github/workflows/publish-workshop.yml'
 
 permissions:
   contents: write

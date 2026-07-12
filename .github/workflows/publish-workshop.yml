@@ -1,0 +1,207 @@
+name: Publish to Steam Workshop
+
+# Reusable workflow: packs a GMod addon with fastgmad and publishes it to a Steam
+# Workshop item. Two login modes, selected by `mfa`:
+#   mfa: false - direct login (STEAM_USERNAME/PASSWORD only), for beta/dev items
+#     owned by a 2FA-disabled account.
+#   mfa: true  - the owner (main) account logs in with a live Steam Guard code
+#     entered on your phone at run time (never stored). The code round-trips via
+#     Home Assistant -> ntfy: this job pings HA, HA prompts your phone, you reply,
+#     HA publishes the code to ntfy, and this job reads it back.
+on:
+  workflow_call:
+    inputs:
+      workshop_id:
+        description: "Target Steam Workshop item id"
+        type: string
+        required: true
+      mfa:
+        description: "Use the phone-entered Steam Guard flow (owner account) instead of direct login"
+        type: boolean
+        default: false
+      addon:
+        description: "Addon display name shown in the phone prompt (mfa only)"
+        type: string
+        default: ""
+      dry_run:
+        description: "Log in and build the .gma but skip the Workshop upload"
+        type: boolean
+        default: false
+      content_folder:
+        description: "Folder within the addon repo to pack (relative; ignored when merge_repo is set)"
+        type: string
+        default: "."
+      merge_repo:
+        description: "Optional extra repo merged under the addon before packing (e.g. AmyJeanes/world-portals)"
+        type: string
+        default: ""
+      merge_ref:
+        description: "Ref of merge_repo to check out"
+        type: string
+        default: ""
+    secrets:
+      STEAM_USERNAME:
+        required: true
+      STEAM_PASSWORD:
+        required: true
+      HA_WEBHOOK_URL:
+        required: false
+      NTFY_CI_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialise runs targeting the same item; different items publish in parallel.
+  group: workshop-publish-${{ inputs.workshop_id }}
+  cancel-in-progress: false
+
+env:
+  NTFY_URL: "https://ntfy.amyjeanes.com"
+  NTFY_TOPIC: "steam-release"
+  # renovate: datasource=github-releases depName=WilliamVenner/fastgmad
+  FASTGMAD_VERSION: "v0.2.0"
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout addon
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          path: addon
+
+      - name: Checkout merge repo
+        if: inputs.merge_repo != ''
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: ${{ inputs.merge_repo }}
+          ref: ${{ inputs.merge_ref }}
+          path: merge
+
+      # All the slow setup (SteamCMD, fastgmad, packing) runs BEFORE the Guard-code
+      # prompt, so an mfa code is consumed within seconds of your reply and can't
+      # go stale.
+      - name: Install SteamCMD
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq lib32gcc-s1
+          mkdir -p "$HOME/Steam"
+          curl -fsSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz | tar zxf - -C "$HOME/Steam"
+          "$HOME/Steam/steamcmd.sh" +quit >/dev/null 2>&1 || true # bootstrap/self-update so login is instant later
+
+      - name: Install fastgmad
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/fastgmad.zip "https://github.com/WilliamVenner/fastgmad/releases/download/${FASTGMAD_VERSION}/fastgmad_linux.zip"
+          unzip -oq /tmp/fastgmad.zip -d /tmp/fastgmad
+          chmod +x /tmp/fastgmad/fastgmad
+
+      - name: Pack the addon into a .gma
+        env:
+          MERGE_REPO: ${{ inputs.merge_repo }}
+          CONTENT_FOLDER: ${{ inputs.content_folder }}
+        run: |
+          set -euo pipefail
+          if [ -n "$MERGE_REPO" ]; then
+            # Merge two repos into one addon: the glob takes their content but not
+            # their top-level repo-management dotfiles (.git/.github/.vscode/...),
+            # which the addon.json ignore list doesn't cover. addon copied last so
+            # its addon.json wins on conflicts and governs packing.
+            content=/tmp/content
+            mkdir -p "$content"
+            cp -r merge/* "$content"/
+            cp -r addon/* "$content"/
+          else
+            content="addon/$CONTENT_FOLDER"
+          fi
+          mkdir -p /tmp/addon
+          ( cd "$content" && /tmp/fastgmad/fastgmad create -folder . -out /tmp/addon/addon.gma )
+
+      - name: Request Steam Guard code via Home Assistant and wait
+        id: guard
+        if: inputs.mfa
+        env:
+          HA_WEBHOOK_URL: ${{ secrets.HA_WEBHOOK_URL }}
+          NTFY_CI_PASSWORD: ${{ secrets.NTFY_CI_PASSWORD }}
+          ADDON: ${{ inputs.addon }}
+        run: |
+          set -euo pipefail
+          nonce=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+          echo "nonce=$nonce" >> "$GITHUB_OUTPUT"
+          echo "Prompting your phone (nonce ${nonce})..."
+          curl -fsS -X POST "$HA_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "{\"addon\":\"${ADDON}\",\"sha\":\"${GITHUB_SHA}\",\"nonce\":\"${nonce}\"}"
+          echo "Waiting up to 10 minutes for the Steam Guard code (reply on your phone)..."
+          deadline=$(( $(date +%s) + 600 ))
+          code=""
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            code=$(curl -fsS -u "ci:${NTFY_CI_PASSWORD}" \
+              "${NTFY_URL}/${NTFY_TOPIC}/json?poll=1&since=10m" \
+              | jq -r --arg n "$nonce" 'select(.event=="message") | select(.title==$n) | .message' \
+              | tail -n1 || true)
+            if [ "$code" = "deny" ]; then echo "::error::Release denied on your phone."; exit 1; fi
+            if [ -n "$code" ]; then break; fi
+            sleep 3
+          done
+          if [ -z "$code" ]; then echo "::error::No Steam Guard code received within 10 minutes."; exit 1; fi
+          echo "::add-mask::$code"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to Steam Workshop
+        # Secrets are scoped to this one step. Split login: consume the login (and,
+        # for mfa, the Guard code) first, then upload with the established session.
+        env:
+          STEAM_USERNAME: ${{ secrets.STEAM_USERNAME }}
+          STEAM_PASSWORD: ${{ secrets.STEAM_PASSWORD }}
+          GUARD_CODE: ${{ steps.guard.outputs.code }}
+          MFA: ${{ inputs.mfa }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          WORKSHOP_ID: ${{ inputs.workshop_id }}
+        run: |
+          set -euo pipefail
+          if [ "$MFA" = "true" ]; then
+            "$HOME/Steam/steamcmd.sh" +login "$STEAM_USERNAME" "$STEAM_PASSWORD" "$GUARD_CODE" +quit
+          else
+            "$HOME/Steam/steamcmd.sh" +login "$STEAM_USERNAME" "$STEAM_PASSWORD" +quit
+          fi
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            echo "Dry run: logged in successfully; skipping the Workshop upload."
+            exit 0
+          fi
+          cat > /tmp/addon/addon.vdf <<VDF
+          "workshopitem"
+          {
+            "appid" "4000"
+            "publishedfileid" "${WORKSHOP_ID}"
+            "contentfolder" "/tmp/addon/addon.gma"
+            "changenote" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}"
+          }
+          VDF
+          "$HOME/Steam/steamcmd.sh" +login "$STEAM_USERNAME" +workshop_build_item /tmp/addon/addon.vdf +quit
+
+      - name: Show SteamCMD logs on failure
+        if: failure()
+        run: |
+          echo "::group::workshop_log.txt"; cat "$HOME/Steam/logs/workshop_log.txt" 2>/dev/null || true; echo "::endgroup::"
+          echo "::group::stderr.txt"; cat "$HOME/Steam/logs/stderr.txt" 2>/dev/null || true; echo "::endgroup::"
+
+      - name: Report result to Home Assistant
+        # Update the phone notification (same nonce/tag) with the outcome, so the
+        # prompt is replaced by a success/failure message instead of lingering.
+        if: always() && inputs.mfa && steps.guard.outputs.nonce != ''
+        env:
+          HA_WEBHOOK_URL: ${{ secrets.HA_WEBHOOK_URL }}
+          ADDON: ${{ inputs.addon }}
+          NONCE: ${{ steps.guard.outputs.nonce }}
+          STATUS: ${{ job.status }}
+        run: |
+          curl -fsS -X POST "$HA_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "{\"phase\":\"result\",\"addon\":\"${ADDON}\",\"nonce\":\"${NONCE}\",\"status\":\"${STATUS}\"}" || true
