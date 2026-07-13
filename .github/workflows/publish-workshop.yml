@@ -39,6 +39,18 @@ on:
         description: "Ref of merge_repo to check out"
         type: string
         default: ""
+      version:
+        description: "Release version/tag, shown as the linked headline in the Steam change note"
+        type: string
+        default: ""
+      release_url:
+        description: "GitHub release URL the change note links to"
+        type: string
+        default: ""
+      release_body:
+        description: "GitHub release body; its '## Summary' first paragraph seeds a single-addon change note"
+        type: string
+        default: ""
     secrets:
       STEAM_USERNAME:
         required: true
@@ -82,6 +94,7 @@ jobs:
           repository: ${{ inputs.merge_repo }}
           ref: ${{ inputs.merge_ref }}
           path: merge
+          fetch-depth: 0 # need tags so the bundled commit resolves to a release version
 
       # All the slow setup (SteamCMD, fastgmad, packing) runs BEFORE the Guard-code
       # prompt, so an mfa code is consumed within seconds of your reply and can't
@@ -122,6 +135,52 @@ jobs:
           fi
           mkdir -p /tmp/addon
           ( cd "$content" && /tmp/fastgmad/fastgmad create -folder . -out /tmp/addon/addon.gma )
+
+      - name: Compose Steam change note
+        env:
+          ADDON: ${{ inputs.addon }}
+          MERGE_REPO: ${{ inputs.merge_repo }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_URL: ${{ inputs.release_url }}
+          RELEASE_BODY: ${{ inputs.release_body }}
+        run: |
+          set -euo pipefail
+          note=/tmp/changenote.txt
+          if [ -z "$RELEASE_URL" ]; then
+            # No release context (a workflow_dispatch dry run, or a beta build) - point
+            # at the commit, matching the beta change note.
+            printf '%s\n' "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}" > "$note"
+          elif [ -n "$MERGE_REPO" ]; then
+            # Merged addon (Doors): label each bundled component with its linked version.
+            # The main addon is always a tagged release; the merge repo (world-portals)
+            # is linked by its tag when the bundled commit is one, else by the commit.
+            {
+              printf '%s:\n[url=%s]%s[/url]\n' "$ADDON" "$RELEASE_URL" "$VERSION"
+              label=$(basename "$MERGE_REPO" | sed -E 's/[-_]+/ /g' | awk '{for(i=1;i<=NF;i++)$i=toupper(substr($i,1,1)) substr($i,2)}1')
+              m_sha=$(git -C merge rev-parse HEAD)
+              if m_tag=$(git -C merge describe --tags --exact-match HEAD 2>/dev/null); then
+                printf '\n%s:\n[url=%s/%s/releases/tag/%s]%s[/url]\n' "$label" "$GITHUB_SERVER_URL" "$MERGE_REPO" "$m_tag" "$m_tag"
+              else
+                m_short=$(git -C merge rev-parse --short HEAD)
+                printf '\n%s:\n[url=%s/%s/commit/%s]%s[/url]\n' "$label" "$GITHUB_SERVER_URL" "$MERGE_REPO" "$m_sha" "$m_short"
+              fi
+            } > "$note"
+          else
+            # Single addon (Sonic/TARDIS): linked version, then the release body's
+            # "## Summary" first paragraph if it has one.
+            summary=$(printf '%s' "$RELEASE_BODY" | tr -d '\r' | awk '
+              /^##[[:space:]]*[Ss]ummary/ { insum=1; next }
+              insum && /^##[[:space:]]/ { exit }
+              insum {
+                if ($0 ~ /^[[:space:]]*$/) { if (started) exit; else next }
+                started=1; print
+              }')
+            {
+              printf '[url=%s]%s[/url]\n' "$RELEASE_URL" "$VERSION"
+              if [ -n "$summary" ]; then printf '%s\n' "$summary"; fi
+            } > "$note"
+          fi
+          echo "::group::Steam change note"; cat "$note"; echo "::endgroup::"
 
       - name: Request Steam Guard code via Home Assistant and wait
         id: guard
@@ -183,15 +242,17 @@ jobs:
             echo "Dry run: logged in successfully; skipping the Workshop upload."
             exit 0
           fi
-          cat > /tmp/addon/addon.vdf <<VDF
-          "workshopitem"
+          # Escape the composed change note for KeyValues, then inject it with printf
+          # (not heredoc expansion) so nothing in the release notes is re-evaluated.
+          note=$(sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' /tmp/changenote.txt)
           {
-            "appid" "4000"
-            "publishedfileid" "${WORKSHOP_ID}"
-            "contentfolder" "/tmp/addon/addon.gma"
-            "changenote" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}"
-          }
-          VDF
+            printf '"workshopitem"\n{\n'
+            printf '\t"appid" "4000"\n'
+            printf '\t"publishedfileid" "%s"\n' "$WORKSHOP_ID"
+            printf '\t"contentfolder" "/tmp/addon/addon.gma"\n'
+            printf '\t"changenote" "%s"\n' "$note"
+            printf '}\n'
+          } > /tmp/addon/addon.vdf
           "$HOME/Steam/steamcmd.sh" +login "$STEAM_USERNAME" +workshop_build_item /tmp/addon/addon.vdf +quit
 
       - name: Show SteamCMD logs on failure
