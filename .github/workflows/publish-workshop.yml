@@ -51,6 +51,10 @@ on:
         description: "GitHub release body; its '## Summary' first paragraph seeds a single-addon change note"
         type: string
         default: ""
+      preview_tag:
+        description: "Dry-run preview: resolve this release tag's notes, log the change note, and skip the prompt + upload"
+        type: string
+        default: ""
     secrets:
       STEAM_USERNAME:
         required: true
@@ -85,6 +89,7 @@ jobs:
       - name: Checkout addon
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
+          ref: ${{ inputs.preview_tag }} # empty -> the triggering ref (the tag on a release event)
           path: addon
 
       - name: Checkout merge repo
@@ -100,6 +105,7 @@ jobs:
       # prompt, so an mfa code is consumed within seconds of your reply and can't
       # go stale.
       - name: Install SteamCMD
+        if: inputs.preview_tag == '' # a change-note preview never logs in
         run: |
           set -euo pipefail
           sudo apt-get update -qq
@@ -136,15 +142,37 @@ jobs:
           mkdir -p /tmp/addon
           ( cd "$content" && /tmp/fastgmad/fastgmad create -folder . -out /tmp/addon/addon.gma )
 
+      - name: Resolve change-note source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          THIS_REPO: ${{ github.repository }}
+          PREVIEW_TAG: ${{ inputs.preview_tag }}
+          IN_VERSION: ${{ inputs.version }}
+          IN_URL: ${{ inputs.release_url }}
+          IN_BODY: ${{ inputs.release_body }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PREVIEW_TAG" ]; then
+            # Dry-run preview: pull the change-note source from the named release.
+            gh release view "$PREVIEW_TAG" --repo "$THIS_REPO" --json tagName,url,body > /tmp/rel.json
+            jq -rj '.tagName // ""' /tmp/rel.json > /tmp/cn_version
+            jq -rj '.url // ""'     /tmp/rel.json > /tmp/cn_url
+            jq -r  '.body // ""'    /tmp/rel.json > /tmp/cn_body
+          else
+            printf '%s' "$IN_VERSION" > /tmp/cn_version
+            printf '%s' "$IN_URL"     > /tmp/cn_url
+            printf '%s' "$IN_BODY"    > /tmp/cn_body
+          fi
+
       - name: Compose Steam change note
         env:
           ADDON: ${{ inputs.addon }}
           MERGE_REPO: ${{ inputs.merge_repo }}
-          VERSION: ${{ inputs.version }}
-          RELEASE_URL: ${{ inputs.release_url }}
-          RELEASE_BODY: ${{ inputs.release_body }}
         run: |
           set -euo pipefail
+          VERSION=$(cat /tmp/cn_version)
+          RELEASE_URL=$(cat /tmp/cn_url)
+          RELEASE_BODY=$(cat /tmp/cn_body)
           note=/tmp/changenote.txt
           if [ -z "$RELEASE_URL" ]; then
             # No release context (a workflow_dispatch dry run, or a beta build) - point
@@ -184,7 +212,7 @@ jobs:
 
       - name: Request Steam Guard code via Home Assistant and wait
         id: guard
-        if: inputs.mfa
+        if: inputs.mfa && inputs.preview_tag == ''
         env:
           HA_WEBHOOK_URL: ${{ secrets.HA_WEBHOOK_URL }}
           NTFY_CI_PASSWORD: ${{ secrets.NTFY_CI_PASSWORD }}
@@ -221,7 +249,7 @@ jobs:
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
       - name: Publish to Steam Workshop
-        if: steps.guard.outputs.denied != 'true'
+        if: steps.guard.outputs.denied != 'true' && inputs.preview_tag == ''
         # Secrets are scoped to this one step. Split login: consume the login (and,
         # for mfa, the Guard code) first, then upload with the established session.
         env:
@@ -265,7 +293,7 @@ jobs:
         # For mfa, always update the phone notification (same tag) with the outcome.
         # For direct-login (beta) runs, stay silent unless the job failed - then send
         # a standalone failure notification (tagged by run id, no prompt to replace).
-        if: always() && (inputs.mfa || failure())
+        if: always() && (inputs.mfa || failure()) && inputs.preview_tag == ''
         env:
           HA_WEBHOOK_URL: ${{ secrets.HA_WEBHOOK_URL }}
           ADDON: ${{ inputs.addon }}
