@@ -186,6 +186,8 @@ jobs:
           RELEASE_URL=$(cat /tmp/cn_url)
           RELEASE_BODY=$(cat /tmp/cn_body)
           note=/tmp/changenote.txt
+          footer="For the full changelog, see the link above."
+          footer_plural="For the full changelogs, see the links above."
 
           # First paragraph under a "## Summary" heading, else empty. Reads the body on stdin.
           summarize() {
@@ -198,7 +200,7 @@ jobs:
               }'
           }
 
-          # Emit "<label>:\n[url]tag[/url]\n<summary>" for a bundled component checked out
+          # Emit "<label>:\n[url]tag[/url]\n\n<summary>" for a bundled component checked out
           # at <dir>. Links its release (with the ## Summary) when HEAD is a tagged commit,
           # else falls back to the plain commit link.
           component() {
@@ -207,7 +209,7 @@ jobs:
               printf '%s:\n[url=%s/%s/releases/tag/%s]%s[/url]\n' "$label" "$GITHUB_SERVER_URL" "$repo" "$tag" "$tag"
               body=$(gh release view "$tag" --repo "$repo" --json body -q .body 2>/dev/null || true)
               sum=$(printf '%s' "$body" | tr -d '\r' | summarize)
-              [ -n "$sum" ] && printf '%s\n' "$sum" || true
+              [ -n "$sum" ] && printf '\n%s\n' "$sum" || true
             else
               sha=$(git -C "$dir" rev-parse HEAD)
               short=$(git -C "$dir" rev-parse --short HEAD)
@@ -224,16 +226,19 @@ jobs:
               component "$ADDON" addon "$GITHUB_REPOSITORY"
               printf '\n'
               component "$label" merge "$MERGE_REPO"
+              printf '\n%s\n' "$footer_plural"
             } > "$note"
           elif [ -z "$RELEASE_URL" ]; then
             # No release context, single addon (a dry run or beta build) - point at the commit.
             printf '%s\n' "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}" > "$note"
           else
-            # Single addon (Sonic/TARDIS): linked version, then the release body's ## Summary.
+            # Single addon (Sonic/TARDIS): linked version, the release body's ## Summary,
+            # then the footer pointing back at the linked release.
             summary=$(printf '%s' "$RELEASE_BODY" | tr -d '\r' | summarize)
             {
               printf '[url=%s]%s[/url]\n' "$RELEASE_URL" "$VERSION"
-              [ -n "$summary" ] && printf '%s\n' "$summary" || true
+              [ -n "$summary" ] && printf '\n%s\n' "$summary" || true
+              printf '\n%s\n' "$footer"
             } > "$note"
           fi
           echo "::group::Steam change note"; cat "$note"; echo "::endgroup::"
