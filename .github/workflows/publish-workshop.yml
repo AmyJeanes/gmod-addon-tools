@@ -112,6 +112,15 @@ jobs:
           path: merge
           fetch-depth: 0 # need tags so the bundled commit resolves to a release version
 
+      # Addons opt in to build-time codegen by having the script; it runs in the addon
+      # checkout (not the assembled content dir) so it can read git, and before the merge
+      # copy so anything it writes is picked up. Standard GITHUB_* env is available.
+      - name: Pre-pack hook
+        if: hashFiles('addon/scripts/pre-pack.ps1') != ''
+        working-directory: addon
+        shell: pwsh
+        run: ./scripts/pre-pack.ps1
+
       # All the slow setup (SteamCMD, fastgmad, packing) runs BEFORE the Guard-code
       # prompt, so an mfa code is consumed within seconds of your reply and can't
       # go stale.

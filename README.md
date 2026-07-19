@@ -37,6 +37,18 @@ The addon-specific surface is small (for TARDIS it was ~5 things):
 
 Everything else is in this repo.
 
+### Build-time codegen: `scripts/pre-pack.ps1`
+
+The reusable publish workflow (`.github/workflows/publish-workshop.yml`) runs an
+addon's `scripts/pre-pack.ps1`, if it has one, in the addon checkout just before
+packing. There is nothing to wire up - an addon opts in by having the file.
+
+Use it for content that must be **generated into the `.gma` but never committed**.
+TARDIS derives its version from the git tag this way: committing a file that
+records the commit sha would change the very sha it records. The checkout has full
+history and tags (`fetch-depth: 0`) and the standard `GITHUB_*` environment, so the
+script can tell a tagged release from a branch build.
+
 ## Consuming it
 
 Addons sit as siblings under `garrysmod/addons/`, and their CI already checks
