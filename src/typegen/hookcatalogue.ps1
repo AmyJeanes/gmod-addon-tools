@@ -171,9 +171,12 @@ $script:HookSyncEnd   = '-- <<< end gmod-addon-tools custom-hook overloads <<<'
 # hook.lua OUTSIDE our spliced block. Used to drop re-fires of native hooks
 # (PlayerUse, CanTool) from an addon's fragment so we only emit its own customs.
 function Get-BuiltinHookNames([string]$root) {
+    # Comma-wrapped returns: an empty HashSet otherwise unrolls to $null (the
+    # Pollux annotations type native hooks elsewhere, so their hook.lua has no
+    # eventName overloads of its own and the set IS empty there).
     $names = [System.Collections.Generic.HashSet[string]]::new()
     $hookLua = Join-Path $root '.tools/glua-api/hook.lua'
-    if (-not (Test-Path $hookLua)) { return $names }
+    if (-not (Test-Path $hookLua)) { return ,$names }
     $inSplice = $false
     foreach ($line in [System.IO.File]::ReadAllLines($hookLua)) {
         $t = $line.Trim()
@@ -183,7 +186,7 @@ function Get-BuiltinHookNames([string]$root) {
         $m = [regex]::Match($line, '@overload fun\(eventName:\s*"([^"]+)"')
         if ($m.Success) { [void]$names.Add($m.Groups[1].Value) }
     }
-    return $names
+    return ,$names
 }
 
 function Build-GlobalHookOverloads {
