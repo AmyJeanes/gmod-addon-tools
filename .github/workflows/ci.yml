@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - renovate/*
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Parse PowerShell
+        shell: pwsh
+        run: |
+          $failed = 0
+          Get-ChildItem -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.psm1', '.psd1' } | ForEach-Object {
+            $errs = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errs) | Out-Null
+            if ($errs) {
+              $failed++
+              foreach ($e in $errs) { Write-Host "::error file=$($_.FullName),line=$($e.Extent.StartLineNumber)::$($e.Message)" }
+            }
+          }
+          if ($failed) { throw "$failed file(s) failed to parse" }
+
+      - name: Import module
+        shell: pwsh
+        run: Import-Module ./GmodAddonTools.psd1 -Force -ErrorAction Stop
