@@ -11,12 +11,23 @@
   },
   "customManagers": [
     {
+      "description": "install.ps1 version pins (github-releases / nuget): a '# renovate:' comment then $Var = '...'. Datasources are enumerated because git-refs digest pins are handled by the separate manager below and RE2 has no negative lookahead to exclude them.",
       "customType": "regex",
       "managerFilePatterns": [
         "/^src/install\\.ps1$/"
       ],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\s+\\$\\w+\\s*=\\s*'(?<currentValue>[^']+)'"
+        "# renovate: datasource=(?<datasource>github-releases|nuget) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\s+\\$\\w+\\s*=\\s*'(?<currentValue>[^']+)'"
+      ]
+    },
+    {
+      "description": "install.ps1 annotations pin: follow the gluals-annotations-prerelease branch head, bumping $GluaApiVersion (its sha) as a git-refs digest update.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^src/install\\.ps1$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>git-refs) depName=(?<depName>\\S+)\\s+\\$GluaApiBranch\\s*=\\s*'(?<currentValue>[^']+)'\\s+\\$GluaApiVersion\\s*=\\s*'(?<currentDigest>[^']+)'"
       ]
     },
     {

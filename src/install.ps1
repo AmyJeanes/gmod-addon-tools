@@ -11,8 +11,11 @@
 $GluaLsVersion  = '1.1.0'
 # Annotations: https://github.com/Pollux12/annotations-gmod-glua-ls - published to
 # branches, not releases; gluals-annotations-prerelease is the beta channel paired
-# with glua_ls 1.1.0's annotation-driven system. Pinned by commit sha of that branch.
-# renovate: datasource=git-refs depName=https://github.com/Pollux12/annotations-gmod-glua-ls branch=gluals-annotations-prerelease
+# with glua_ls 1.1.0's annotation-driven system. Pinned by commit sha of that branch;
+# Renovate follows the branch head (currentValue=branch, currentDigest=sha) - see the
+# git-refs customManager in renovate.json.
+# renovate: datasource=git-refs depName=https://github.com/Pollux12/annotations-gmod-glua-ls
+$GluaApiBranch  = 'gluals-annotations-prerelease'
 $GluaApiVersion = 'ebc359aa5dea781b9bda9fe4948aa9c7681ab78c'
 # glua_doc_cli drives the wiki generator + typing gate - it parses the ---@class /
 # ---@field annotations into a JSON type model. It is the GLua fork's doc CLI (same
@@ -293,5 +296,5 @@ function Initialize-GmodTools {
     if ($moonSharpDll) {
         Write-Host "  MoonSharp       $MoonSharpVersion       -> $moonSharpDll"
     }
-    Write-Host "  glua-api        $GluaApiVersion -> $GluaApiDir"
+    Write-Host "  glua-api        $GluaApiVersion ($GluaApiBranch) -> $GluaApiDir"
 }
