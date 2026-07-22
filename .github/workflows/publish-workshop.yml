@@ -97,7 +97,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout addon
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.preview_tag || inputs.addon_ref }} # preview tag, else pinned addon_ref, else the triggering ref
           fetch-depth: 0 # need tags so the checked-out commit resolves to a release version
@@ -105,7 +105,7 @@ jobs:
 
       - name: Checkout merge repo
         if: inputs.merge_repo != ''
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ inputs.merge_repo }}
           ref: ${{ inputs.merge_ref }}
