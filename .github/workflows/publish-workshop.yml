@@ -85,7 +85,7 @@ env:
   NTFY_URL: "https://ntfy.amyjeanes.com"
   NTFY_TOPIC: "steam-release"
   # renovate: datasource=github-releases depName=WilliamVenner/fastgmad
-  FASTGMAD_VERSION: "v0.2.0"
+  FASTGMAD_VERSION: "v0.2.1"
 
 jobs:
   publish:
