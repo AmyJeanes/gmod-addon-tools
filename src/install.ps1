@@ -8,10 +8,12 @@
 # Renovate (renovate.json customManagers) bumps these on upstream releases.
 # Releases: https://github.com/Pollux12/gmod-glua-ls/releases
 # renovate: datasource=github-releases depName=Pollux12/gmod-glua-ls
-$GluaLsVersion  = '1.0.27'
-# Releases: https://github.com/luttje/glua-api-snippets/releases
-# renovate: datasource=github-releases depName=luttje/glua-api-snippets versioning=loose
-$GluaApiVersion = '2026-06-28_08-26-18'
+$GluaLsVersion  = '1.1.0'
+# Annotations: https://github.com/Pollux12/annotations-gmod-glua-ls - published to
+# branches, not releases; gluals-annotations-prerelease is the beta channel paired
+# with glua_ls 1.1.0's annotation-driven system. Pinned by commit sha of that branch.
+# renovate: datasource=git-refs depName=https://github.com/Pollux12/annotations-gmod-glua-ls branch=gluals-annotations-prerelease
+$GluaApiVersion = 'ebc359aa5dea781b9bda9fe4948aa9c7681ab78c'
 # glua_doc_cli drives the wiki generator + typing gate - it parses the ---@class /
 # ---@field annotations into a JSON type model. It is the GLua fork's doc CLI (same
 # analyzer core as glua_ls / glua_check), so it resolves types like the IDE, unlike
@@ -166,16 +168,29 @@ function Initialize-GmodTools {
         }
     }
 
-    # glua-api stubs (always) ------------------------------------------------
+    # glua-api annotations (always) ------------------------------------------
     # .luarc.json points at .tools/glua-api directly, so the working dir IS the
-    # install target. A .version marker tracks which release is currently
-    # extracted; mismatch triggers a clean re-extract.
+    # install target. A .version marker tracks which commit is currently
+    # extracted; mismatch triggers a clean re-extract. The GitHub branch archive
+    # nests everything under <repo>-<sha>/, so extract to a temp dir and lift
+    # the annotation files into place.
     $currentMark = if (Test-Path $GluaApiMark) { (Get-Content $GluaApiMark -Raw).Trim() } else { '' }
     if ($currentMark -ne $GluaApiVersion) {
-        Write-Host "Installing glua-api stubs $GluaApiVersion -> $GluaApiDir"
+        Write-Host "Installing glua-api annotations $GluaApiVersion -> $GluaApiDir"
         if (Test-Path $GluaApiDir) { Remove-Item $GluaApiDir -Recurse -Force }
-        $url = "https://github.com/luttje/glua-api-snippets/releases/download/$GluaApiVersion/$GluaApiVersion.lua.zip"
-        Install-Archive -Url $url -Dest $GluaApiDir
+        $extract = Join-Path ([System.IO.Path]::GetTempPath()) ("glua-api-" + [guid]::NewGuid().ToString('N'))
+        try {
+            # .zip (not .tar.gz): Expand-Archive is drive-letter-safe everywhere,
+            # while a PATH'd GNU tar can misread C:\ paths as remote hosts.
+            $url = "https://github.com/Pollux12/annotations-gmod-glua-ls/archive/$GluaApiVersion.zip"
+            Install-Archive -Url $url -Dest $extract
+            $inner = Get-ChildItem $extract -Directory | Select-Object -First 1
+            if (-not $inner) { throw "glua-api archive extracted empty: $url" }
+            New-Item -ItemType Directory -Force -Path $GluaApiDir | Out-Null
+            Copy-Item (Join-Path $inner.FullName '*') $GluaApiDir -Recurse -Force
+        } finally {
+            Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
+        }
         Set-Content -Path $GluaApiMark -Value $GluaApiVersion
     }
 
