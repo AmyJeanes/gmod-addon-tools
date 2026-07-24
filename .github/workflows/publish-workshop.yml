@@ -72,6 +72,8 @@ on:
         required: false
       NTFY_CI_PASSWORD:
         required: false
+      DISCORD_WEBHOOK_URL:
+        required: false
 
 permissions:
   contents: read
@@ -332,6 +334,37 @@ jobs:
         run: |
           echo "::group::workshop_log.txt"; cat "$HOME/Steam/logs/workshop_log.txt" 2>/dev/null || true; echo "::endgroup::"
           echo "::group::stderr.txt"; cat "$HOME/Steam/logs/stderr.txt" 2>/dev/null || true; echo "::endgroup::"
+
+      - name: Announce the update on Discord
+        # Success only - a dry run, a preview or an mfa-denied publish stays quiet.
+        if: steps.upload.outputs.uploaded == 'true'
+        continue-on-error: true # the item is already live; a failed post must not red the run
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          ADDON: ${{ inputs.addon }}
+          WORKSHOP_ID: ${{ inputs.workshop_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then echo "No Discord webhook set; skipping."; exit 0; fi
+          url="https://steamcommunity.com/sharedfiles/filedetails/?id=${WORKSHOP_ID}"
+          # The item's own title already carries the channel ("TARDIS (Beta)"), so name it from
+          # that rather than the addon input. Scraped from the page, not the web API: beta items
+          # are unlisted, and the API reports those as not-found while the page still serves them.
+          og=$(curl -fsS --max-time 15 --retry 3 --retry-delay 2 "$url" \
+            | grep -o '<meta property="og:title" content="[^"]*"' | head -n1 \
+            | sed -e 's/.*content="//' -e 's/"$//' || true)
+          case "$og" in
+            # An item page titles itself "Steam Workshop::<title>"; anything else is Steam's
+            # error page (served as a 200) or a relaid-out page - fall back on the addon name.
+            "Steam Workshop::"?*)
+              title=$(printf '%s' "${og#Steam Workshop::}" \
+                | sed -e 's/&amp;/\&/g' -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/"/g' -e "s/&#39;/'/g") ;;
+            *) title="$ADDON" ;;
+          esac
+          jq -n --arg t "$title" --arg u "$url" \
+            '{content: "[\($t)](\($u)) has been updated on Steam Workshop", allowed_mentions: {parse: []}}' \
+            | curl -fsS -X POST -H 'Content-Type: application/json' -d @- "$DISCORD_WEBHOOK_URL" >/dev/null
+          echo "Announced: $title"
 
       - name: Report result to Home Assistant
         # For mfa, always update the phone notification (same tag) with the outcome.
