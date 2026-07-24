@@ -361,11 +361,15 @@ function Get-HookModel {
             foreach ($fire in $fires) {
                 $full = Join-Path $RepoRoot $fire.File
                 $entClass = Get-FileEntityClass $fire.File
-                if ($fire.RecvCol) { $fire.RecvType = Get-LspHoverType $srv $full $fire.Line $fire.RecvCol 3 }
+                # The canary only proves ITS file is indexed - a file whose hooks are all
+                # gamemode fires (no receiver to canary on) can still be cold here. Retries
+                # sleep only while the server answers with an error; a resolved-but-untyped
+                # hover returns on the first round-trip, so a larger budget costs nothing.
+                if ($fire.RecvCol) { $fire.RecvType = Get-LspHoverType $srv $full $fire.Line $fire.RecvCol 25 }
                 foreach ($a in $fire.Args) {
                     if ($a.IsLiteral) { $a.Type = $a.LitType; continue }
                     if ($a.Display -eq 'self' -and $entClass) { $a.Type = $entClass; continue }
-                    $a.Type = if ($a.HoverCol) { Get-LspHoverType $srv $full $fire.Line $a.HoverCol 3 -Return:([bool]$a.IsCall) } else { '' }
+                    $a.Type = if ($a.HoverCol) { Get-LspHoverType $srv $full $fire.Line $a.HoverCol 25 -Return:([bool]$a.IsCall) } else { '' }
                     if ((Test-HookTypeUnknown $a.Type) -and $a.Display -match '^[A-Za-z_]\w*$') {
                         if (-not $fileLines.ContainsKey($fire.File)) { $fileLines[$fire.File] = [System.IO.File]::ReadAllLines($full) }
                         $pt = Get-EnclosingParamType $fileLines[$fire.File] ($fire.Line - 1) $a.Display

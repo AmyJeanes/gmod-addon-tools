@@ -78,6 +78,13 @@ function Invoke-LspRequest($server, [string]$method, $params) {
 function Start-LspServer([string]$exePath, [string]$rootPath) {
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $exePath
+    # glua_ls 1.1.1 exits(1) rather than falling back when GMod mode can't resolve an
+    # annotations path; .luarc.json's workspace.library does not count as one.
+    $apiDir = Join-Path $rootPath '.tools/glua-api'
+    if (Test-Path $apiDir) {
+        $psi.ArgumentList.Add('--gmod-annotations-path')
+        $psi.ArgumentList.Add($apiDir)
+    }
     $psi.UseShellExecute = $false
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
@@ -156,6 +163,15 @@ function Get-LspHoverType($server, [string]$filePath, [int]$line, [int]$char, [i
             return ''
         }
         foreach ($ln in ($value -split "`n")) {
+            # A union is rendered parenthesised with each member's base chain inline -
+            # "(NULL : Entity|linked_portal_door : ENT : Entity)". Taking `\S+` off that
+            # yields "(NULL", so pull the member names out and rebuild the union.
+            if ($ln -match '(?:local|global|param)?\s*[\w]+\s*:\s*(\(.+\))\s*$') {
+                $members = $Matches[1].Trim('(', ')') -split '\|' |
+                    ForEach-Object { ($_ -split '\s+:\s+', 2)[0].Trim() } |
+                    Where-Object { $_ }
+                if ($members) { return ($members -join '|') }
+            }
             if ($ln -match '(?:local|global|param)?\s*[\w]+\s*:\s*(\S+)') {
                 return ($Matches[1].TrimEnd('{', ',').Trim())
             }
@@ -164,3 +180,6 @@ function Get-LspHoverType($server, [string]$filePath, [int]$line, [int]$char, [i
     }
     return ''
 }
+
+
+
