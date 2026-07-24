@@ -16,7 +16,7 @@ $GluaLsVersion  = '1.1.0'
 # git-refs customManager in renovate.json.
 # renovate: datasource=git-refs depName=https://github.com/Pollux12/annotations-gmod-glua-ls
 $GluaApiBranch  = 'gluals-annotations-prerelease'
-$GluaApiVersion = 'ebc359aa5dea781b9bda9fe4948aa9c7681ab78c'
+$GluaApiVersion = '537fa712f337aafdc821ef0cfe3367f0578047ed'
 # glua_doc_cli drives the wiki generator + typing gate - it parses the ---@class /
 # ---@field annotations into a JSON type model. It is the GLua fork's doc CLI (same
 # analyzer core as glua_ls / glua_check), so it resolves types like the IDE, unlike
