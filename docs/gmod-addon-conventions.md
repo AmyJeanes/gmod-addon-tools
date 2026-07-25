@@ -26,6 +26,22 @@ Nothing about the symptom points at the cause, which is what makes this worth kn
 
 `Initialize-GmodTools` warns when it spots one, and because `scripts/glua-check.ps1` provisions before it scans, that warning appears in CI too. Note the asymmetry though: CI checks out siblings as fresh clones and `.tools/` is gitignored, so CI sees the *misconfiguration* but never suffers the *duplication* - the broken narrowing is a developer-machine symptom. A green CI run is not evidence your local diagnostics are trustworthy.
 
+### `.luatypes` files must abort if executed
+
+Annotation files declare real globals and library functions with empty bodies - `CPPI = {}`, `function debug.getinfo(...) end`, `vrmod = nil`. The analyzer reads those as declarations; Lua would read them as assignments, so loading one at runtime replaces working code with stubs rather than typing it. Doors' `cppi.lua` would quietly disable prop protection; TARDIS's `wire.lua` would blank six WireLib functions.
+
+They live outside `lua/`, which is what actually keeps them safe - the game mounts only `lua/`, `models/`, `materials/` and friends, and `gmad` packs from the same whitelist, so nothing can reach them. **Keep them there.** Moving them under `lua/` makes them both mountable and packable.
+
+As a backstop, every one of them carries an `error()` as its first executable line, so if anything ever does load one it fails by name instead of corrupting the environment:
+
+```lua
+---@meta
+
+error("cppi.lua contains type annotations only and must never be executed")
+```
+
+That has no effect on the analyzer - declarations after an unconditional `error()` still resolve, verified for globals, parameter types and return types. `Initialize-GmodTools` warns about any file missing it.
+
 ## Claude Code LSP integration (`glua-lsp` plugin)
 
 Diagnostics, hover, and jump-to-definition come from the [`glua-lsp` plugin](https://github.com/AmyJeanes/gmod-claude-plugins) (marketplace `AmyJeanes/gmod-claude-plugins`), which wraps the [`glua_ls`](https://github.com/Pollux12/gmod-glua-ls) server - the same EmmyLua-Analyzer-Rust engine as `glua_check`, running long-lived. Diagnostics arrive automatically after every edit; no hook involvement. `.claude/settings.json` declares the marketplace so contributors get prompted to install on first open, and the plugin auto-resolves `glua_ls` from this project's `.tools/bin/` at launch (no global install, no PATH plumbing). The `glua-lsp:install-glua-ls` skill covers the same recovery flow if symptoms appear later. Treat reported diagnostics as actionable only if your edit caused them - pre-existing noise on unrelated lines is not in scope for the current change.

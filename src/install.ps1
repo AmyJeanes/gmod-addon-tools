@@ -80,6 +80,38 @@ the GLua annotations, so on a developer machine they are loaded twice. That brea
     }
 }
 
+# Every .luatypes file must abort if it is ever executed. They declare real globals and
+# library functions with empty bodies - a declaration to the analyzer, a destructive
+# assignment to Lua - so loading one replaces working functions with stubs. Living
+# outside lua/ is what keeps them unreachable; the error() is the backstop for if that
+# stops being true. It does not affect the analyzer, which never executes them.
+function Test-GmodTypeFileGuards {
+    param([Parameter(Mandatory)] [string] $Root)
+
+    $dir = Join-Path $Root '.luatypes'
+    if (-not (Test-Path $dir)) { return }
+
+    $unguarded = @(
+        Get-ChildItem $dir -Filter *.lua -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object {
+                # Only the first executable statement matters; comments and annotations
+                # above it are inert either way.
+                $code = Get-Content $_.FullName | Where-Object { $_.Trim() -ne '' -and $_.Trim() -notmatch '^--' }
+                -not ($code | Select-Object -First 1) -or ($code | Select-Object -First 1) -notmatch '^\s*error\('
+            } | ForEach-Object { $_.Name }
+    )
+
+    if ($unguarded.Count) {
+        Write-Warning @"
+These .luatypes files have no runtime guard: $($unguarded -join ', ')
+They declare real globals and functions with empty bodies, so executing one replaces
+working code with stubs rather than typing it. Add an error() as the first executable
+line so it fails loudly instead:
+  error("<name>.lua contains type annotations only and must never be executed")
+"@
+    }
+}
+
 function Initialize-GmodTools {
     <#
     .SYNOPSIS
@@ -333,6 +365,7 @@ function Initialize-GmodTools {
     }
 
     Test-GmodLibraryPaths -Root $Root
+    Test-GmodTypeFileGuards -Root $Root
 
     Write-Host ''
     Write-Host 'Tools ready:'
