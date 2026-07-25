@@ -34,6 +34,52 @@ $GluaDocCliVersion = $GluaLsVersion
 # renovate: datasource=nuget depName=MoonSharp
 $MoonSharpVersion = '2.0.0'
 
+# Warn if .luarc.json points a workspace library at a sibling addon's repository ROOT.
+# Each addon provisions its own .tools/glua-api, so a root-level entry loads a second
+# copy of the whole annotation set. The analyzer then holds two declarations of every
+# class and function and stops applying @return_cast, so narrowing fails silently at
+# sites with no visible connection to libraries. The copies are not interchangeable
+# either: each addon's generated hook overloads are spliced into its own hook.lua, so
+# the two disagree. Upstream: Pollux12/gmod-glua-ls#48.
+#
+# Detected via the sibling's committed scripts/install-tools.ps1 rather than its
+# provisioned .tools/glua-api: that marker means "this addon provisions its own
+# annotations", so the config is wrong whether or not the copy exists yet. It is also
+# the only form that works in CI, where sibling checkouts are fresh clones with no
+# .tools/ - the misconfiguration is visible there even though the duplication itself
+# only materialises locally. Addons without the marker (wire, TARDIS-Legacy) carry no
+# annotations of their own and are safe to reference by root.
+function Test-GmodLibraryPaths {
+    param([Parameter(Mandatory)] [string] $Root)
+
+    $luarcPath = Join-Path $Root '.luarc.json'
+    if (-not (Test-Path $luarcPath)) { return }
+
+    try { $luarc = Get-Content $luarcPath -Raw | ConvertFrom-Json }
+    catch {
+        Write-Warning "Could not parse $luarcPath - skipping library path check: $($_.Exception.Message)"
+        return
+    }
+
+    $library = $luarc.workspace.library
+    if (-not $library) { return }
+
+    $rootFull = [System.IO.Path]::GetFullPath($Root)
+    foreach ($entry in $library) {
+        $resolved = try { [System.IO.Path]::GetFullPath((Join-Path $Root $entry)) } catch { continue }
+        if ($resolved -eq $rootFull) { continue }
+        if (-not (Test-Path (Join-Path $resolved 'scripts/install-tools.ps1'))) { continue }
+
+        Write-Warning @"
+Workspace library '$entry' is an addon repository root that provisions its own copy of
+the GLua annotations, so on a developer machine they are loaded twice. That breaks
+@return_cast narrowing and degrades type resolution at unrelated sites
+(Pollux12/gmod-glua-ls#48).
+  Fix: point at the subdirectories instead - '$entry/lua' and '$entry/.luatypes'.
+"@
+    }
+}
+
 function Initialize-GmodTools {
     <#
     .SYNOPSIS
@@ -285,6 +331,8 @@ function Initialize-GmodTools {
             Set-Content -Path $moonSharpMark -Value $MoonSharpVersion
         }
     }
+
+    Test-GmodLibraryPaths -Root $Root
 
     Write-Host ''
     Write-Host 'Tools ready:'
