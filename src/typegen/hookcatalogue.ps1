@@ -282,9 +282,16 @@ function Sync-GmodHookTypes {
         try {
             $cfg = Get-Content $luarc -Raw | ConvertFrom-Json
             foreach ($lib in @($cfg.workspace.library)) {
-                if ($lib -notmatch '^\.\.') { continue }   # sibling addon roots only
-                $abs = [System.IO.Path]::GetFullPath((Join-Path $Root $lib))
-                if (Test-Path $abs) { [void]$searchRoots.Add($abs) }
+                $rel = $lib -replace '\\', '/'
+                if ($rel -notmatch '^\.\./') { continue }   # sibling addons only
+                # Take the sibling's ROOT, not the entry itself. Entries point below it
+                # ('../Doors/lua', '../Doors/.luatypes') because naming a sibling's root
+                # as a library loads its provisioned annotations a second time and breaks
+                # narrowing - see Test-GmodLibraryPaths. The fragments live in <root>/types,
+                # so resolve back up to the root instead of trusting the entry's depth.
+                $siblingRoot = ($rel -split '/')[0..1] -join '/'
+                $abs = [System.IO.Path]::GetFullPath((Join-Path $Root $siblingRoot))
+                if ((Test-Path $abs) -and -not $searchRoots.Contains($abs)) { [void]$searchRoots.Add($abs) }
             }
         } catch { Write-Warning "Sync-GmodHookTypes: could not parse $luarc - $($_.Exception.Message)" }
     }
