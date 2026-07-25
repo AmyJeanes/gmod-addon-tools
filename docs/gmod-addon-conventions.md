@@ -18,29 +18,17 @@ pwsh -File scripts/install-tools.ps1
 
 It is idempotent - re-running is a no-op when the pinned versions are already present, so it is also the recovery path when diagnostics look wrong. After a fresh install, run `/reload-plugins` so Claude Code re-launches the LSP against the new binary.
 
-### Never point a workspace library at a sibling addon's repository root
+### `.luarc.json` library entries
 
-In `.luarc.json`, reference a sibling's **subdirectories** - `../Doors/lua` and `../Doors/.luatypes` - never `../Doors` itself. Every addon provisions its own `.tools/glua-api`, so a root-level entry silently loads a second copy of the entire annotation set. The analyzer then holds two declarations of every class and function and stops applying `@return_cast`, so type narrowing fails at sites with no visible connection to libraries: guards stop narrowing, and diagnostics appear on code that is perfectly correct. The two copies are not even interchangeable, because each addon's generated hook overloads are spliced into its own `hook.lua`.
-
-Nothing about the symptom points at the cause, which is what makes this worth knowing rather than discovering. Reported upstream as [gmod-glua-ls#48](https://github.com/Pollux12/gmod-glua-ls/issues/48).
-
-`Initialize-GmodTools` warns when it spots one, and because `scripts/glua-check.ps1` provisions before it scans, that warning appears in CI too. Note the asymmetry though: CI checks out siblings as fresh clones and `.tools/` is gitignored, so CI sees the *misconfiguration* but never suffers the *duplication* - the broken narrowing is a developer-machine symptom. A green CI run is not evidence your local diagnostics are trustworthy.
+Reference a sibling's subdirectories - `../Doors/lua` **and** `../Doors/.luatypes` - never `../Doors` itself. Each addon provisions its own `.tools/glua-api`, so a root entry loads the annotations twice, which breaks `@return_cast` narrowing and misreports types at sites with no visible link to libraries ([gmod-glua-ls#48](https://github.com/Pollux12/gmod-glua-ls/issues/48)). Omitting a sibling's `.luatypes` silently drops its type overrides. `Initialize-GmodTools` fails on both.
 
 ### `.luatypes` files must abort if executed
 
-Annotation files declare real globals and library functions with empty bodies - `CPPI = {}`, `function debug.getinfo(...) end`, `vrmod = nil`. The analyzer reads those as declarations; Lua would read them as assignments, so loading one at runtime replaces working code with stubs rather than typing it. Doors' `cppi.lua` would quietly disable prop protection; TARDIS's `wire.lua` would blank six WireLib functions.
-
-They live outside `lua/`, which is what actually keeps them safe - the game mounts only `lua/`, `models/`, `materials/` and friends, and `gmad` packs from the same whitelist, so nothing can reach them. **Keep them there.** Moving them under `lua/` makes them both mountable and packable.
-
-As a backstop, every one of them carries an `error()` as its first executable line, so if anything ever does load one it fails by name instead of corrupting the environment:
+They declare real globals and functions with empty bodies (`CPPI = {}`, `function debug.getinfo(...) end`), so executing one replaces working code with stubs. Living outside `lua/` is what keeps them unreachable - the game mounts, and `gmad` packs, from a fixed folder whitelist - so leave them there. Each also carries a guard as its first executable line, which `Initialize-GmodTools` enforces and the analyzer ignores:
 
 ```lua
----@meta
-
 error("cppi.lua contains type annotations only and must never be executed")
 ```
-
-That has no effect on the analyzer - declarations after an unconditional `error()` still resolve, verified for globals, parameter types and return types. `Initialize-GmodTools` warns about any file missing it.
 
 ## Claude Code LSP integration (`glua-lsp` plugin)
 
@@ -50,13 +38,7 @@ Diagnostics, hover, and jump-to-definition come from the [`glua-lsp` plugin](htt
 
 `glua_ls` only analyzes files as they are opened or edited. To audit the whole repo at once, run `pwsh -File scripts/glua-check.ps1` - it provisions tooling on demand (no-op when present) and runs `glua_check --warnings-as-errors` against the workspace root. It takes no path filter, so it always scans everything; CI runs the same script. Useful after a fix ripples across the tree, or when picking the project up to surface latent issues the LSP hasn't opened yet.
 
-**Local and CI can disagree, and CI is authoritative** - but be careful about calling that a platform gap, because two things previously filed under that heading turned out not to be (measured 2026-07-25, `glua_check` 1.1.1):
-
-- **`glua_check` itself is platform-consistent.** Running the Linux binary under WSL against the same files gives byte-identical output to Windows, across declared types, inferred types and every narrowing form tested. If local and CI disagree on a diagnostic, suspect a difference in *what is being analyzed* before suspecting the analyzer.
-- **An undeclared engine classname** (`ents.Create` / `FindByClass` on a class with no annotation entry) was thought to hint only on CI. It hints everywhere; a duplicate copy of the annotations on the workspace library was masking it locally. De-duplicate the library, then declare the class in `.luatypes` as `---@class <name> : Entity`.
-- **Still genuinely divergent:** the generated hook catalogue. `generate-hook-types.ps1` resolves fire-site argument types through `glua_doc_cli`, a different path from `glua_check`, and that path *does* differ by platform - on Linux it can emit a type its own analyzer disagrees with, and an explicit `---@type` does not override it. Hence the rule that CI owns that file: never run the generator locally on a tree you intend to push.
-
-A strict `---@class`/`---@type` on a *partial or reused literal* remains worth avoiding regardless - use `table`/`table[]?` or a `--[[@as Class]]` cast rather than annotating the literal.
+**Local and CI can disagree, and CI is authoritative** - but `glua_check` itself is platform-consistent (verified against the Linux binary), so suspect a difference in *what is being analyzed* before suspecting the analyzer: a duplicate annotations copy on the library masks undeclared engine classnames locally, for instance. Declare those in `.luatypes` as `---@class <name> : Entity`. What does diverge is the generated hook catalogue, which resolves types through `glua_doc_cli` rather than `glua_check` - hence CI owning that file, and never regenerating it locally. Avoid a strict `---@class`/`---@type` on a *partial or reused literal*; use `table`/`table[]?` or a `--[[@as Class]]` cast instead.
 
 ## Typing enforcement (`scripts/typing-check.ps1`)
 
