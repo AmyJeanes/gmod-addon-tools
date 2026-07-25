@@ -65,18 +65,39 @@ function Test-GmodLibraryPaths {
     if (-not $library) { return }
 
     $rootFull = [System.IO.Path]::GetFullPath($Root)
+    $problems = [System.Collections.Generic.List[string]]::new()
+
     foreach ($entry in $library) {
         $resolved = try { [System.IO.Path]::GetFullPath((Join-Path $Root $entry)) } catch { continue }
         if ($resolved -eq $rootFull) { continue }
         if (-not (Test-Path (Join-Path $resolved 'scripts/install-tools.ps1'))) { continue }
 
-        Write-Warning @"
-Workspace library '$entry' is an addon repository root that provisions its own copy of
-the GLua annotations, so on a developer machine they are loaded twice. That breaks
-@return_cast narrowing and degrades type resolution at unrelated sites
-(Pollux12/gmod-glua-ls#48).
+        $problems.Add(@"
+'$entry' is an addon repository root that provisions its own copy of the GLua
+  annotations, so on a developer machine they are loaded twice. That breaks @return_cast
+  narrowing and degrades type resolution at unrelated sites (Pollux12/gmod-glua-ls#48).
   Fix: point at the subdirectories instead - '$entry/lua' and '$entry/.luatypes'.
-"@
+"@)
+    }
+
+    # A sibling's type overrides live in its .luatypes, a separate library entry from its
+    # lua/. Naming one without the other silently drops those declarations, and the symptom
+    # is a diagnostic somewhere unrelated rather than anything pointing back here.
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($entry in $library) {
+        $rel = $entry -replace '\\', '/'
+        if ($rel -notmatch '^\.\./') { continue }
+        $sibling = ($rel -split '/')[0..1] -join '/'
+        if (-not $seen.Add($sibling)) { continue }
+        $abs = try { [System.IO.Path]::GetFullPath((Join-Path $Root $sibling)) } catch { continue }
+        if (-not (Test-Path (Join-Path $abs '.luatypes'))) { continue }
+        if (@($library) -contains "$sibling/.luatypes") { continue }
+
+        $problems.Add("'$sibling/.luatypes' exists but is not on the library, so that addon's type overrides are missing. Add it alongside '$sibling/lua'.")
+    }
+
+    if ($problems.Count) {
+        throw "Workspace library problems in $luarcPath`:`n  - " + ($problems -join "`n  - ")
     }
 }
 
@@ -102,7 +123,7 @@ function Test-GmodTypeFileGuards {
     )
 
     if ($unguarded.Count) {
-        Write-Warning @"
+        throw @"
 These .luatypes files have no runtime guard: $($unguarded -join ', ')
 They declare real globals and functions with empty bodies, so executing one replaces
 working code with stubs rather than typing it. Add an error() as the first executable

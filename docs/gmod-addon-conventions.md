@@ -50,7 +50,13 @@ Diagnostics, hover, and jump-to-definition come from the [`glua-lsp` plugin](htt
 
 `glua_ls` only analyzes files as they are opened or edited. To audit the whole repo at once, run `pwsh -File scripts/glua-check.ps1` - it provisions tooling on demand (no-op when present) and runs `glua_check --warnings-as-errors` against the workspace root. It takes no path filter, so it always scans everything; CI runs the same script. Useful after a fix ripples across the tree, or when picking the project up to surface latent issues the LSP hasn't opened yet.
 
-**Local (Windows) vs CI (Linux) can diverge - CI is authoritative.** The same tooling and files can flag differently on Linux and no `.luarc.json` change closes that platform gap, so a green local `glua-check` isn't conclusive - watch CI's Linux `GLua Check` job after pushing typing changes. Most often the culprit is a strict `---@class`/`---@type` on a *partial or reused literal* (passes Windows, fails Linux); use `table`/`table[]?` or a `--[[@as Class]]` cast instead of annotating the literal. A second Linux-only firing: an undeclared engine classname used in `ents.Create` / `FindByClass` hints on CI but not locally - declare it in `.luatypes` as `---@class <name> : Entity`.
+**Local and CI can disagree, and CI is authoritative** - but be careful about calling that a platform gap, because two things previously filed under that heading turned out not to be (measured 2026-07-25, `glua_check` 1.1.1):
+
+- **`glua_check` itself is platform-consistent.** Running the Linux binary under WSL against the same files gives byte-identical output to Windows, across declared types, inferred types and every narrowing form tested. If local and CI disagree on a diagnostic, suspect a difference in *what is being analyzed* before suspecting the analyzer.
+- **An undeclared engine classname** (`ents.Create` / `FindByClass` on a class with no annotation entry) was thought to hint only on CI. It hints everywhere; a duplicate copy of the annotations on the workspace library was masking it locally. De-duplicate the library, then declare the class in `.luatypes` as `---@class <name> : Entity`.
+- **Still genuinely divergent:** the generated hook catalogue. `generate-hook-types.ps1` resolves fire-site argument types through `glua_doc_cli`, a different path from `glua_check`, and that path *does* differ by platform - on Linux it can emit a type its own analyzer disagrees with, and an explicit `---@type` does not override it. Hence the rule that CI owns that file: never run the generator locally on a tree you intend to push.
+
+A strict `---@class`/`---@type` on a *partial or reused literal* remains worth avoiding regardless - use `table`/`table[]?` or a `--[[@as Class]]` cast rather than annotating the literal.
 
 ## Typing enforcement (`scripts/typing-check.ps1`)
 
