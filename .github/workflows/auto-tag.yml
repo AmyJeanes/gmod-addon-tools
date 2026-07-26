@@ -7,7 +7,10 @@ name: Auto-tag
 # each consumer that runs their CI before the tooling change lands - rather than
 # tracking main and breaking a later unrelated build. Docs / CI-only changes
 # don't touch these paths, so they don't cut a release - but the reusable
-# publish-workshop workflow IS consumer-pinned tooling, so it cuts a tag too.
+# publish-workshop workflow IS consumer-pinned tooling, so it cuts a tag too,
+# and so is the conventions block, which each consumer's generate-claude-md
+# checks out at the pinned tag and splices into its CLAUDE.md. Without a tag
+# that edit reaches nobody. Other docs/ files are not consumer-pinned.
 on:
   push:
     branches: [main]
@@ -16,6 +19,7 @@ on:
       - 'GmodAddonTools.psd1'
       - 'GmodAddonTools.psm1'
       - '.github/workflows/publish-workshop.yml'
+      - 'docs/gmod-addon-conventions.md'
 
 permissions:
   contents: write
