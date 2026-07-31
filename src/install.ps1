@@ -189,6 +189,28 @@ function Initialize-GmodTools {
         throw 'Unsupported platform: prebuilt glua_check / glua_ls binaries are only published for Windows and Linux x64.'
     }
 
+    # GitHub and nuget.org reset connections often enough that an unretried
+    # download turns CI red on a fault that has nothing to do with the change,
+    # which then blocks Renovate from automerging.
+    function Save-UrlWithRetry {
+        param(
+            [Parameter(Mandatory)] [string] $Url,
+            [Parameter(Mandatory)] [string] $OutFile,
+            [int] $Attempts = 4
+        )
+        for ($i = 1; $i -le $Attempts; $i++) {
+            try {
+                Invoke-WebRequest -Uri $Url -OutFile $OutFile
+                return
+            } catch {
+                if ($i -eq $Attempts) { throw }
+                $delay = [Math]::Pow(2, $i - 1)
+                Write-Host "  attempt $i/$Attempts failed ($($_.Exception.Message)); retrying in ${delay}s"
+                Start-Sleep -Seconds $delay
+            }
+        }
+    }
+
     function Install-Archive {
         param(
             [Parameter(Mandatory)] [string] $Url,
@@ -198,7 +220,7 @@ function Initialize-GmodTools {
         $tmp = New-TemporaryFile
         try {
             Write-Host "  downloading $Url"
-            Invoke-WebRequest -Uri $Url -OutFile $tmp.FullName
+            Save-UrlWithRetry -Url $Url -OutFile $tmp.FullName
             if ($Url.EndsWith('.zip')) {
                 Expand-Archive -Path $tmp.FullName -DestinationPath $Dest -Force
             } elseif ($Url.EndsWith('.tar.gz')) {
@@ -259,7 +281,7 @@ function Initialize-GmodTools {
             try {
                 $url = "https://api.nuget.org/v3-flatcontainer/moonsharp/$MoonSharpVersion/moonsharp.$MoonSharpVersion.nupkg"
                 Write-Host "  downloading $url"
-                Invoke-WebRequest -Uri $url -OutFile $tmp.FullName
+                Save-UrlWithRetry -Url $url -OutFile $tmp.FullName
                 Expand-Archive -Path $tmp.FullName -DestinationPath $extract -Force
                 Copy-Item (Join-Path $extract 'lib/netstandard1.6/MoonSharp.Interpreter.dll') $moonSharpDll -Force
             } finally {
