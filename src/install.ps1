@@ -96,6 +96,17 @@ function Test-GmodLibraryPaths {
         $problems.Add("'$sibling/.luatypes' exists but is not on the library, so that addon's type overrides are missing. Add it alongside '$sibling/lua'.")
     }
 
+    # .luatypes exists to override the provisioned annotations, and the analyzer resolves a
+    # collision in favour of the EARLIER library entry - so listing it after .tools/glua-api
+    # silently discards every override in it. Nothing points back here when that happens; the
+    # symptom is a diagnostic on ordinary code that the override was written to prevent.
+    $normalized = @($library | ForEach-Object { ($_ -replace '\\', '/') -replace '^\./', '' })
+    $ownTypes = [Array]::IndexOf($normalized, '.luatypes')
+    $ownApi = [Array]::IndexOf($normalized, '.tools/glua-api')
+    if ($ownTypes -ge 0 -and $ownApi -ge 0 -and $ownApi -lt $ownTypes) {
+        $problems.Add("'./.luatypes' is listed after './.tools/glua-api', so the analyzer resolves every collision in favour of the annotations and this addon's own type overrides do nothing. Move './.luatypes' above it.")
+    }
+
     if ($problems.Count) {
         throw "Workspace library problems in $luarcPath`:`n  - " + ($problems -join "`n  - ")
     }
