@@ -8,10 +8,10 @@
 # Renovate (renovate.json customManagers) bumps these on upstream releases.
 # Releases: https://github.com/Pollux12/gmod-glua-ls/releases
 # renovate: datasource=github-releases depName=Pollux12/gmod-glua-ls
-$GluaLsVersion  = '1.1.1'
+$GluaLsVersion  = '1.1.2'
 # Annotations: https://github.com/Pollux12/annotations-gmod-glua-ls - published to
 # branches, not releases; gluals-annotations-prerelease is the beta channel paired
-# with glua_ls 1.1.1's annotation-driven system. Pinned by commit sha of that branch;
+# with the analyzer's annotation-driven system. Pinned by commit sha of that branch;
 # Renovate follows the branch head (currentValue=branch, currentDigest=sha) - see the
 # git-refs customManager in renovate.json.
 # renovate: datasource=git-refs depName=https://github.com/Pollux12/annotations-gmod-glua-ls
@@ -20,10 +20,7 @@ $GluaApiVersion = '9e973c4f0a86e570afde4f5c6637a06b358898ca'
 # glua_doc_cli drives the wiki generator + typing gate - it parses the ---@class /
 # ---@field annotations into a JSON type model. It is the GLua fork's doc CLI (same
 # analyzer core as glua_ls / glua_check), so it resolves types like the IDE, unlike
-# upstream emmylua_doc_cli. Pollux ships it as a crate but not a release asset, so we
-# build+host it: the "Build glua_doc_cli" workflow publishes a `glua_doc_cli-<ver>`
-# release on THIS repo from Pollux's tagged source. Pinned to $GluaLsVersion so it
-# resolves identically; a version bump auto-builds the matching release (that workflow).
+# upstream emmylua_doc_cli. Pinned to $GluaLsVersion so all three resolve identically.
 $GluaDocCliVersion = $GluaLsVersion
 # MoonSharp (pure-C# Lua interpreter) drives the headless harness - it runs the
 # addon's content-definition Lua under a GMod stub environment to extract runtime
@@ -270,11 +267,10 @@ function Initialize-GmodTools {
     $gluaCheckExe = Install-Binary -Name 'glua_check' -Dest $GluaCheckDir -Repo 'Pollux12/gmod-glua-ls' -Version $GluaLsVersion
     $gluaLsExe    = Install-Binary -Name 'glua_ls'    -Dest $GluaLsDir    -Repo 'Pollux12/gmod-glua-ls' -Version $GluaLsVersion
 
-    # glua_doc_cli - the type-model CLI (wiki generator + typing gate). Self-hosted:
-    # built from Pollux's source and published as a `glua_doc_cli-<ver>` release here.
+    # glua_doc_cli - the type-model CLI (wiki generator + typing gate).
     $gluaDocExe = $null
     if ($wantTypeModel) {
-        $gluaDocExe = Install-Binary -Name 'glua_doc_cli' -Dest $GluaDocCliDir -Repo 'AmyJeanes/gmod-addon-tools' -Version "glua_doc_cli-$GluaDocCliVersion"
+        $gluaDocExe = Install-Binary -Name 'glua_doc_cli' -Dest $GluaDocCliDir -Repo 'Pollux12/gmod-glua-ls' -Version $GluaDocCliVersion
     }
 
     # MoonSharp - the headless harness interpreter. A .nupkg (zip) rather than a
