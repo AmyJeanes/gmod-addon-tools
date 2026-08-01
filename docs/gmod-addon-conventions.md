@@ -51,7 +51,20 @@ Where an addon fires its own hooks, callback payload params are typed by a gener
 
 The two gates disagree by design: `Test-GmodTyping` only asks whether a param is typed at all, which an `---@overload` match satisfies; `infer-unknown` additionally asks whether it was _declared_, which an overload match is not. So a hook callback can pass typing-check and still trip `infer-unknown` on values derived from its params - an explicit `---@param` above the `hook.Add` clears it. This hits stock GMod hooks too, not just generated catalogues.
 
-A committed `---@diagnostic disable` marks a genuine analyzer bug - it fired, and was suppressed. A `---@cast` / `---@type` / `--[[@as]]` frequently does not; it is often a redundant defensive leftover. Remove it in the real workspace and re-check before concluding anything. That re-check has to reach the fire sites too: the generated catalogue resolves `CallHook` / `hook.Run` argument types, so a cast feeding one is load-bearing for a file neither gate reads and only CI regenerates - deleting one has turned `main` red with no local signal. On an addon with a generated wiki a `---@field` can decide a *published* type too - one deletion downgraded a rendered `linked_portal_door` to `Entity` with both gates green and CI committing the worse page - so render to a scratch `-WikiPath` and diff before removing one. Suppressions tracking an upstream report carry a `glua_ls upstream:` comment with the issue URL, so grep that to find what to retire when one closes.
+A committed `---@diagnostic disable` marks a genuine analyzer bug - it fired, and was suppressed. A `---@cast` / `---@type` / `--[[@as]]` frequently does not; it is often a redundant defensive leftover. Remove it in the real workspace and re-check before concluding anything - but **four** things read these annotations and only two of them run locally:
+
+- `glua_check` - **count the diagnostics, never the exit code**; `hint` sits below `--warnings-as-errors`, so a hint-level regression still prints `Check successful` and exits 0.
+- `Test-GmodTyping` - hook fire-site arguments `glua_check` never mentions.
+- the generated hook catalogue - it resolves `CallHook` / `hook.Run` argument types and only regenerates in CI, so deleting a cast that fed one has turned `main` red with no local signal at all.
+- a generated wiki - a `---@field` can decide a *published* type, and nothing gates it: the workflow regenerates and commits rather than failing on drift. One deletion downgraded a rendered `linked_portal_door` to `Entity` with both code gates green.
+
+`Test-GmodAnnotation` measures all four - it removes the annotation, re-measures each, restores, and reports which moved (an inline `--[[@as T]]` has its token stripped rather than its line deleted):
+
+```powershell
+pwsh -c ". ./scripts/bootstrap.ps1; Test-GmodAnnotation -RepoRoot . -Site 'lua/foo.lua:270'"
+```
+
+Suppressions tracking an upstream report carry a `glua_ls upstream:` comment with the issue URL, so grep that to find what to retire when one closes.
 
 Already investigated and **not** bugs, so do not re-derive them: `pcall` never narrows on `ok` (a limitation every Lua type system shares); `table.Copy` is genuinely generic, and its casts suppress `need-check-nil` because the return is honestly `T?`; `string.gmatch`'s bare `---@return function` makes a local `---@type fun(): string` a real tightening rather than a workaround; the undocumented Derma / `DModelPanel` getters are correctly omitted from the stubs; and a runtime-conditional `ENT.Base` (Wire mounted or not) cannot be resolved statically - an explicit `---@cast` does not clear it either, so the suppression stays.
 

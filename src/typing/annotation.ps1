@@ -102,6 +102,11 @@ function Test-GmodAnnotation {
 
     $RepoRoot = (Resolve-Path $RepoRoot).Path
     $exe = Join-Path $RepoRoot ".tools/bin/glua_check$(if ($IsWindows -or $env:OS -match 'Windows') { '.exe' } else { '' })"
+    # Provision on demand like the other entry points, so a cold checkout is not a dead end.
+    if (-not (Test-Path $exe)) {
+        $installer = Join-Path $RepoRoot 'scripts/install-tools.ps1'
+        if (Test-Path $installer) { & pwsh -NoProfile -File $installer *>&1 | Out-Null }
+    }
     if (-not (Test-Path $exe)) { throw "glua_check not provisioned at '$exe'. Run scripts/install-tools.ps1 first." }
 
     $sites = @($Site | ForEach-Object { ConvertFrom-AnnotationSite $_ $RepoRoot })
