@@ -66,7 +66,7 @@ pwsh -c ". ./scripts/bootstrap.ps1; Test-GmodAnnotation -RepoRoot . -Site 'lua/f
 
 Suppressions tracking an upstream report carry a `glua_ls upstream:` comment with the issue URL, so grep that to find what to retire when one closes.
 
-Already investigated and **not** bugs, so do not re-derive them: `pcall` never narrows on `ok` (a limitation every Lua type system shares); `table.Copy` is genuinely generic, and its casts suppress `need-check-nil` because the return is honestly `T?`; `string.gmatch`'s bare `---@return function` makes a local `---@type fun(): string` a real tightening rather than a workaround; the undocumented Derma / `DModelPanel` getters are correctly omitted from the stubs; and a runtime-conditional `ENT.Base` (Wire mounted or not) cannot be resolved statically - an explicit `---@cast` does not clear it either, so the suppression stays.
+Already investigated and **not** bugs, so do not re-derive them: `pcall` never narrows on `ok` (a limitation every Lua type system shares); `table.Copy` is genuinely generic, and its casts suppress `need-check-nil` because the return is honestly `T?`; `string.gmatch`'s bare `---@return function` makes a local `---@type fun(): string` a real tightening rather than a workaround; the undocumented Derma / `DModelPanel` getters are correctly omitted from the stubs; and a runtime-conditional `ENT.Base` (Wire mounted or not) cannot be resolved statically, though that no longer costs a suppression - wire came off the analysis surface and the symbols we use are declared instead.
 
 ## Bumping the shared tooling
 
