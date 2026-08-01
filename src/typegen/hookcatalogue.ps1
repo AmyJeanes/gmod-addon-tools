@@ -32,7 +32,11 @@ function ConvertTo-HookParamType([string]$t) {
     if (-not $t) { return 'any' }
     $b = $t.TrimEnd('?')
     if ($b -in @('any', 'unknown', 'nil', 'void', '')) { return 'any' }
-    if ($b -match '^[A-Z]$') { return 'any' }                 # unresolved generic (T / K / V)
+    # An unresolved generic (T / K / V), alone OR as a union member. A call that leaves a
+    # ---@generic unbound (no `default` arg on ENT:GetData) widens the value to `Player|T`,
+    # and emitting that names a type that does not exist where the overload lands, so
+    # glua_check fails type-not-found on our own generated file.
+    if (@(($b -replace '^\(|\)$', '') -split '\|' | Where-Object { $_.Trim() -match '^[A-Z]$' }).Count) { return 'any' }
     if ($t -match '\bvararg\b') { return 'any' }              # a `...` arg - can't be a named param
     # unbalanced brackets, or a truncated function type with an empty slot -> not safe to emit
     foreach ($pair in @(@('(', ')'), @('[', ']'), @('<', '>'))) {
