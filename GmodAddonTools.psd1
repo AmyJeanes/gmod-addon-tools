@@ -17,7 +17,8 @@
         'Get-HarnessMeta',
         'Test-GmodTyping',
         'Get-GmodUntypedParams',
-        'Get-GmodParamMismatch'
+        'Get-GmodParamMismatch',
+        'Test-GmodAnnotation'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()
