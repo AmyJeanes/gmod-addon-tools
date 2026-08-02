@@ -18,7 +18,8 @@
         'Test-GmodTyping',
         'Get-GmodUntypedParams',
         'Get-GmodParamMismatch',
-        'Test-GmodAnnotation'
+        'Test-GmodAnnotation',
+        'Invoke-GluaCheck'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

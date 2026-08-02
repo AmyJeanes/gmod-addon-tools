@@ -6,6 +6,7 @@
 #   Sync-GmodHookTypes    - splice custom-hook ---@overloads into the provisioned hook.lua
 #   Sync-AddonConventions - inject the shared CLAUDE.md conventions block into a consumer
 #   Invoke-WikiGen        - render the API type-reference wiki from annotations
+#   Invoke-GluaCheck      - run glua_check over a repo and summarise what it found
 #   Build-HookTypeCatalogue - inject literal-string AddHook ---@overloads from CallHook sites
 #   Build-GlobalHookOverloads - emit an addon's custom hook.Call/Run overload fragment
 #   New-AddonHarness      - load an addon's content Lua headless under MoonSharp
@@ -27,6 +28,7 @@
 . "$PSScriptRoot/src/typing/typing.ps1"
 . "$PSScriptRoot/src/typing/annotation.ps1"
 . "$PSScriptRoot/src/docs/conventions.ps1"
+. "$PSScriptRoot/src/check/gluacheck.ps1"
 
 Export-ModuleMember -Function @(
     'Initialize-GmodTools',
@@ -41,5 +43,6 @@ Export-ModuleMember -Function @(
     'Test-GmodTyping',
     'Get-GmodUntypedParams',
     'Get-GmodParamMismatch',
-    'Test-GmodAnnotation'
+    'Test-GmodAnnotation',
+    'Invoke-GluaCheck'
 )
