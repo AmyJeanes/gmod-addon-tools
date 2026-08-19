@@ -62,9 +62,12 @@ function Get-EmmyFnModel([string]$RepoRoot, [string]$LuaRoot) {
     $cfgArgs = @()
     $luarc = Join-Path $RepoRoot '.luarc.json'
     if (Test-Path $luarc) { $cfgArgs = @('-c', $luarc) }
+    # GMod stubs reach glua_doc_cli via --gmod-annotations (not workspace.library), else a
+    # return inherited from a GMod global resolves to `unknown` and trips the gate.
+    $annArgs = Get-GmodAnnotationsArgs $luarc
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("gmod-typing-" + [guid]::NewGuid().ToString('N') + ".json")
     try {
-        & $docCli $LuaRoot @cfgArgs -f json -o $tmp --exclude '**/gmod_wire_expression2/**' | Out-Null
+        & $docCli $LuaRoot @cfgArgs @annArgs -f json -o $tmp --exclude '**/gmod_wire_expression2/**' | Out-Null
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tmp)) { return $model }
         $doc = (Get-Content -LiteralPath $tmp -Raw -Encoding utf8) | ConvertFrom-Json
     } finally {

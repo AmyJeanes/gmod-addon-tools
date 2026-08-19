@@ -84,8 +84,11 @@ function Parse-Annotations([string]$root) {
     $luarc = Join-Path (Split-Path -Parent $root) '.luarc.json'
     if (-not (Test-Path $luarc)) { $luarc = Join-Path $RepoRoot '.luarc.json' }
     if (Test-Path $luarc) { $cfgArgs = @('-c', $luarc) }
+    # GMod stubs reach glua_doc_cli via --gmod-annotations (not workspace.library), else a
+    # return built from a GMod global (LocalToWorld -> Vector) resolves to `unknown`.
+    $annArgs = Get-GmodAnnotationsArgs $luarc
     try {
-        & $docCli $root @cfgArgs -f json -o $tmp --exclude '**/gmod_wire_expression2/**' | Out-Null
+        & $docCli $root @cfgArgs @annArgs -f json -o $tmp --exclude '**/gmod_wire_expression2/**' | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "glua_doc_cli failed (exit $LASTEXITCODE)." }
         $doc = (Get-Content -LiteralPath $tmp -Raw -Encoding utf8) | ConvertFrom-Json
     } finally {

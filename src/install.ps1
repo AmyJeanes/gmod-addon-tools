@@ -8,7 +8,7 @@
 # Renovate (renovate.json customManagers) bumps these on upstream releases.
 # Releases: https://github.com/Pollux12/gmod-glua-ls/releases
 # renovate: datasource=github-releases depName=Pollux12/gmod-glua-ls
-$GluaLsVersion  = '1.1.2'
+$GluaLsVersion  = '1.2.0'
 # Annotations: https://github.com/Pollux12/annotations-gmod-glua-ls - published to
 # branches, not releases; gluals-annotations-prerelease is the beta channel paired
 # with the analyzer's annotation-driven system. Pinned by commit sha of that branch;
@@ -20,8 +20,12 @@ $GluaApiVersion = 'aae734159da3b5a701c5de2e703e5a8c94a5eddf'
 # glua_doc_cli drives the wiki generator + typing gate - it parses the ---@class /
 # ---@field annotations into a JSON type model. It is the GLua fork's doc CLI (same
 # analyzer core as glua_ls / glua_check), so it resolves types like the IDE, unlike
-# upstream emmylua_doc_cli. Pinned to $GluaLsVersion so all three resolve identically.
-$GluaDocCliVersion = $GluaLsVersion
+# upstream emmylua_doc_cli.
+# TEMPORARY: sourced from our fork build, not Pollux's release, because it carries the
+# --gmod-annotations flag (Pollux12/gmod-glua-ls#87) that upstream 1.2.0 lacks. Revert to
+# Repo 'Pollux12/gmod-glua-ls' + $GluaDocCliVersion = $GluaLsVersion once #87 ships upstream.
+$GluaDocCliRepo    = 'AmyJeanes/gmod-glua-ls'
+$GluaDocCliVersion = 'doccli-gmodannotations-1'
 # MoonSharp (pure-C# Lua interpreter) drives the headless harness - it runs the
 # addon's content-definition Lua under a GMod stub environment to extract runtime
 # defaults for the wiki. Shipped as a NuGet package; the netstandard DLL loads
@@ -30,6 +34,26 @@ $GluaDocCliVersion = $GluaLsVersion
 # Releases: https://www.nuget.org/packages/MoonSharp
 # renovate: datasource=nuget depName=MoonSharp
 $MoonSharpVersion = '2.0.0'
+
+# The GMod annotations reach glua_check AND glua_doc_cli through --gmod-annotations, not as a
+# workspace.library entry: neither reads gmod.annotationsPath on the CLI path (that key is
+# LSP-only), and as a library the annotations both double-load and order against ./.luatypes,
+# tripping a 1.2.0 infer-unknown / undefined-field false positive on any member ./.luatypes
+# declares on a stub global. glua_doc_cli additionally needs the flag to fully resolve stub
+# inheritance - the config key alone leaves inherited returns unknown. Reads the path from the
+# same .luarc.json passed as -c and resolves it against that file's directory, so it is
+# cwd-independent; empty when unset, leaving a repo that still lists them the old way untouched.
+function Get-GmodAnnotationsArgs {
+    param([Parameter(Mandatory)] [string] $LuarcPath)
+    if (-not (Test-Path $LuarcPath)) { return @() }
+    try { $ap = (Get-Content $LuarcPath -Raw | ConvertFrom-Json).gmod.annotationsPath }
+    catch { return @() }
+    if (-not $ap) { return @() }
+    if (-not [System.IO.Path]::IsPathRooted($ap)) {
+        $ap = Join-Path (Split-Path -Parent (Resolve-Path -LiteralPath $LuarcPath).Path) $ap
+    }
+    return @('--gmod-annotations', $ap)
+}
 
 # Warn if .luarc.json points a workspace library at a sibling addon's repository ROOT.
 # Each addon provisions its own .tools/glua-api, so a root-level entry loads a second
@@ -93,15 +117,21 @@ function Test-GmodLibraryPaths {
         $problems.Add("'$sibling/.luatypes' exists but is not on the library, so that addon's type overrides are missing. Add it alongside '$sibling/lua'.")
     }
 
-    # .luatypes exists to override the provisioned annotations, and the analyzer resolves a
-    # collision in favour of the EARLIER library entry - so listing it after .tools/glua-api
-    # silently discards every override in it. Nothing points back here when that happens; the
-    # symptom is a diagnostic on ordinary code that the override was written to prevent.
+    # The GMod annotations belong in gmod.annotationsPath, not on workspace.library. As a library
+    # entry they load twice (the LSP reads gmod.annotationsPath as well) and get ordered against
+    # ./.luatypes; a member that ./.luatypes declares on a stub global (e.g. util.RealTraceLine)
+    # then trips a 1.2.0 infer-unknown / undefined-field false positive. Provided via
+    # gmod.annotationsPath they are not a library, so the ordering - and the false positive - cannot
+    # arise: glua_check and glua_doc_cli both pick them up via --gmod-annotations, while glua_ls reads
+    # the config key directly. Trade-off accepted deliberately: annotations provided this way can no
+    # longer be overridden by ./.luatypes, so a genuinely-wrong stub is fixed at its call site (and
+    # the annotation bug raised) rather than patched in ./.luatypes.
     $normalized = @($library | ForEach-Object { ($_ -replace '\\', '/') -replace '^\./', '' })
-    $ownTypes = [Array]::IndexOf($normalized, '.luatypes')
-    $ownApi = [Array]::IndexOf($normalized, '.tools/glua-api')
-    if ($ownTypes -ge 0 -and $ownApi -ge 0 -and $ownApi -lt $ownTypes) {
-        $problems.Add("'./.luatypes' is listed after './.tools/glua-api', so the analyzer resolves every collision in favour of the annotations and this addon's own type overrides do nothing. Move './.luatypes' above it.")
+    if ([Array]::IndexOf($normalized, '.tools/glua-api') -ge 0) {
+        $problems.Add("'./.tools/glua-api' is on workspace.library. Provide the GMod annotations via 'gmod.annotationsPath' instead - as a library they double-load and order against './.luatypes', tripping a 1.2.0 false positive. Remove it from workspace.library (keep './.luatypes').")
+    }
+    if (-not $luarc.gmod.annotationsPath) {
+        $problems.Add("'gmod.annotationsPath' is not set. Point it at the provisioned annotations (e.g. './.tools/glua-api') so the LSP, glua_check and glua_doc_cli (both via --gmod-annotations) all resolve the GMod stubs.")
     }
 
     if ($problems.Count) {
@@ -270,7 +300,7 @@ function Initialize-GmodTools {
     # glua_doc_cli - the type-model CLI (wiki generator + typing gate).
     $gluaDocExe = $null
     if ($wantTypeModel) {
-        $gluaDocExe = Install-Binary -Name 'glua_doc_cli' -Dest $GluaDocCliDir -Repo 'Pollux12/gmod-glua-ls' -Version $GluaDocCliVersion
+        $gluaDocExe = Install-Binary -Name 'glua_doc_cli' -Dest $GluaDocCliDir -Repo $GluaDocCliRepo -Version $GluaDocCliVersion
     }
 
     # MoonSharp - the headless harness interpreter. A .nupkg (zip) rather than a

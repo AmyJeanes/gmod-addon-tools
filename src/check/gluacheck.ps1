@@ -15,9 +15,10 @@
 
 # glua_check emits one of these per overlapping workspace.library entry. On a machine where
 # sibling addons sit on the library path that is a dozen lines of environmental noise ahead
-# of the real output, so it is collapsed to a count unless -Verbose is on.
+# of the real output, so it is collapsed to a count unless -Verbose is on. 1.2.0 reworded it
+# from "... overlaps definitions" to "... has duplicate definitions that conflict with ..."; match both.
 function Test-GluaCheckNoise([string]$line) {
-    return $line -match '^\s*(\x1b\[\d+m)?WARN: Library .* overlaps definitions'
+    return $line -match '^\s*(\x1b\[\d+m)?WARN: Library .*(overlaps definitions|has duplicate definitions)'
 }
 
 <#
@@ -58,13 +59,15 @@ function Invoke-GluaCheck {
         throw "glua_check is not provisioned at '$exe'. Run scripts/install-tools.ps1 first."
     }
 
+    $annotations = Get-GmodAnnotationsArgs (Join-Path $RepoRoot '.luarc.json')
+
     Push-Location $RepoRoot
     try {
-        $output   = & $exe --warnings-as-errors . 2>&1 | ForEach-Object { $_.ToString() }
+        $output   = & $exe --warnings-as-errors @annotations . 2>&1 | ForEach-Object { $_.ToString() }
         $exitCode = $LASTEXITCODE
 
         if ($Sarif) {
-            & $exe --warnings-as-errors -f sarif --output $Sarif . 2>$null | Out-Null
+            & $exe --warnings-as-errors @annotations -f sarif --output $Sarif . 2>$null | Out-Null
         }
     }
     finally {

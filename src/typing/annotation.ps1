@@ -41,7 +41,10 @@ function ConvertFrom-AnnotationSite([string]$spec, [string]$RepoRoot) {
 # Diagnostics at EVERY severity. glua_check prints "Check successful" and exits 0 with
 # hints present, so neither the exit code nor the summary line can be trusted.
 function Measure-GluaCheck([string]$RepoRoot, [string]$Exe) {
-    $out = & $Exe $RepoRoot 2>&1
+    # Pass the GMod annotations the same way the real gate does (Invoke-GluaCheck), else this
+    # measures glua_check without the stubs loaded and reports diagnostics the gate never sees.
+    $ann = Get-GmodAnnotationsArgs (Join-Path $RepoRoot '.luarc.json')
+    $out = & $Exe $RepoRoot @ann 2>&1
     $diag = @($out | Select-String -Pattern '^\s*(hint|warning|error):' | ForEach-Object { $_.Line.Trim() })
     return @{ Count = $diag.Count; Detail = $diag }
 }
