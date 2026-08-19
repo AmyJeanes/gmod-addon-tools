@@ -134,7 +134,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq lib32gcc-s1
           mkdir -p "$HOME/Steam"
-          curl -fsSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz | tar zxf - -C "$HOME/Steam"
+          # -4: GitHub runners are dual-stack but their IPv6 egress often black-holes, so an
+          # IPv6 connection to Akamai establishes then stalls mid-transfer and curl hangs. Force IPv4.
+          curl -4 -fsSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz | tar zxf - -C "$HOME/Steam"
           "$HOME/Steam/steamcmd.sh" +quit >/dev/null 2>&1 || true # bootstrap/self-update so login is instant later
 
       - name: Install fastgmad
