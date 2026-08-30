@@ -17,7 +17,7 @@ git clone https://github.com/AmyJeanes/gmod-addon-tools ../gmod-addon-tools
 pwsh -File scripts/install-tools.ps1
 ```
 
-It is idempotent - re-running is a no-op when the pinned versions are already present, so it is also the recovery path when diagnostics look wrong. After a fresh install, run `/reload-plugins` so Claude Code re-launches the LSP against the new binary.
+It is idempotent - re-running is a no-op when the pinned versions are already present, so it is also the recovery path when diagnostics look wrong. In Claude Code, run `/reload-plugins` after a fresh install so the live LSP restarts against the new binary. Codex does not need a reload because it uses the project-local tools for explicit checks rather than a live LSP session.
 
 ### `.luarc.json` library entries
 
@@ -31,9 +31,11 @@ They declare real globals and functions with empty bodies (`CPPI = {}`, `functio
 error("cppi.lua contains type annotations only and must never be executed")
 ```
 
-## Claude Code LSP integration (`glua-lsp` plugin)
+## GLua analyzer integration (`glua-lsp` plugin)
 
-Diagnostics, hover, and jump-to-definition come from the [`glua-lsp` plugin](https://github.com/AmyJeanes/gmod-claude-plugins) (marketplace `AmyJeanes/gmod-claude-plugins`), which wraps the [`glua_ls`](https://github.com/Pollux12/gmod-glua-ls) server - the same EmmyLua-Analyzer-Rust engine as `glua_check`, running long-lived. Diagnostics arrive automatically after every edit; no hook involvement. `.claude/settings.json` declares the marketplace so contributors get prompted to install on first open, and the plugin auto-resolves `glua_ls` from this project's `.tools/bin/` at launch (no global install, no PATH plumbing). The `glua-lsp:install-glua-ls` skill covers the same recovery flow if symptoms appear later. Treat reported diagnostics as actionable only if your edit caused them - pre-existing noise on unrelated lines is not in scope for the current change.
+The [`glua-lsp` plugin](https://github.com/AmyJeanes/gmod-agent-plugins) distributes the shared GLua setup and recovery skills to Claude Code and Codex. Both agents use the same project-local [`glua_ls`](https://github.com/Pollux12/gmod-glua-ls), `glua_check`, and API stubs under `.tools/`; no global install or PATH plumbing is required.
+
+Claude Code also uses the plugin for live diagnostics, hover, and jump-to-definition. Diagnostics arrive automatically after every edit. `.claude/settings.json` declares the `gmod-agent-plugins` marketplace so contributors are prompted to install it on first open, and the plugin resolves `glua_ls` from this project's `.tools/bin/` when it launches. Codex does not currently expose a live LSP integration, so use `scripts/glua-check.ps1` for repository diagnostics there. The `glua-lsp:install-glua-ls` skill covers the same provisioning and recovery flow in either agent. Treat diagnostics as actionable only when the current change caused them; pre-existing noise on unrelated lines is outside scope.
 
 ## Whole-repo scans (`scripts/glua-check.ps1`)
 
@@ -45,7 +47,7 @@ Diagnostics, hover, and jump-to-definition come from the [`glua-lsp` plugin](htt
 
 `glua_check` catches _wrong_ types but not _missing_ ones - an untyped param is a silent `any` it never flags. `Test-GmodTyping` (CI: `typing-check.yml`) closes that gap, failing the build on any of: an untyped param, annotation rot (a `---@param` for a param that no longer exists), a modeled function whose resolved return type contains `unknown`, a hook fire-site argument that resolves to `unknown`, or a `:CallHook`-style hook whose receiver resolves to `unknown` (so its "Fired on" column would render _Unknown_ - usually fixed with a `---@param self <class>` on the enclosing function). Satisfy it at the **source** - prefer a `---@param` / `---@return` / `---@class` annotation over a per-callsite `---@cast`, since annotations propagate to every caller. The only accepted escapes are explicit and greppable: `---@param x any` (a reviewed, genuine `any`), an `_` discard for a deliberately-unused arg, and a file-level `---@vendored` marker on third-party code.
 
-Where an addon fires its own hooks, callback payload params are typed by a generated `---@overload` catalogue (`scripts/generate-hook-types.ps1`, CI: `generate-hook-types.yml`) - do not hand-edit it; retype a payload at its `CallHook` / `hook.Run` site instead. Custom global-hook overloads are spliced into the provisioned `hook.lua` by `Initialize-GmodTools`, so after pulling a change to a generated fragment mid-session, re-run `scripts/install-tools.ps1` (it re-syncs) then `/reload-plugins` to refresh live types.
+Where an addon fires its own hooks, callback payload params are typed by a generated `---@overload` catalogue (`scripts/generate-hook-types.ps1`, CI: `generate-hook-types.yml`) - do not hand-edit it; retype a payload at its `CallHook` / `hook.Run` site instead. Custom global-hook overloads are spliced into the provisioned `hook.lua` by `Initialize-GmodTools`, so after pulling a change to a generated fragment mid-session, re-run `scripts/install-tools.ps1` to re-sync it. In Claude Code, then run `/reload-plugins` to refresh the live types.
 
 ## Before reporting a `glua_ls` bug
 
