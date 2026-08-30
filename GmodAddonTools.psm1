@@ -4,7 +4,7 @@
 #   Initialize-GmodTools  - provision pinned tooling into a consumer's .tools/ + sync hook overloads
 #   Test-GmodAnnotation   - removal-test an annotation against every consumer that reads it
 #   Sync-GmodHookTypes    - splice custom-hook ---@overloads into the provisioned hook.lua
-#   Sync-AddonConventions - inject the shared CLAUDE.md conventions block into a consumer
+#   Sync-AddonConventions - inject the shared AGENTS.md conventions block into a consumer
 #   Invoke-WikiGen        - render the API type-reference wiki from annotations
 #   Invoke-GluaCheck      - run glua_check over a repo and summarise what it found
 #   Build-HookTypeCatalogue - inject literal-string AddHook ---@overloads from CallHook sites
