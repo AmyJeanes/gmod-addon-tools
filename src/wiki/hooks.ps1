@@ -344,6 +344,14 @@ function Get-HookModel {
     if (-not $NoLsp) {
         $srv = Start-LspServer $gluaLs $RepoRoot
         try {
+            # Wall-clock cap on the whole enrich phase. When the workspace is indexed every
+            # hover returns on the first round-trip and this is never approached; when it is
+            # NOT indexed each hover burns its full retry budget, so hundreds of fire sites
+            # turn into a tens-of-minutes silent grind. Cap it and fail loud instead. This is
+            # time-based on purpose - not tied to any one hover resolving - so a legitimately
+            # untyped receiver can't false-fail it. Overridable via GMOD_LSP_ENRICH_TIMEOUT_SEC.
+            $enrichCapSec = if ($env:GMOD_LSP_ENRICH_TIMEOUT_SEC -as [int]) { [int]$env:GMOD_LSP_ENRICH_TIMEOUT_SEC } else { 150 }
+            $enrichSw = [System.Diagnostics.Stopwatch]::StartNew()
             foreach ($rel in ($fires | Select-Object -ExpandProperty File -Unique)) {
                 Open-LspDocument $srv (Join-Path $RepoRoot $rel)
             }
@@ -359,6 +367,9 @@ function Get-HookModel {
             }
             $fileLines = @{}
             foreach ($fire in $fires) {
+                if ($enrichSw.Elapsed.TotalSeconds -gt $enrichCapSec) {
+                    throw "glua_ls hook-surface type resolution exceeded ${enrichCapSec}s for '$RepoRoot'. The workspace almost certainly did not finish indexing in time - usually transient CPU/IO contention or first-run antivirus scanning of newly written files, not a code error. Re-run the check (it warms fast), or run repositories serially rather than in parallel. Raise GMOD_LSP_ENRICH_TIMEOUT_SEC if a large workspace legitimately needs longer."
+                }
                 $full = Join-Path $RepoRoot $fire.File
                 $entClass = Get-FileEntityClass $fire.File
                 # The canary only proves ITS file is indexed - a file whose hooks are all

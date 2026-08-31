@@ -37,3 +37,7 @@ jobs:
       - name: Import module
         shell: pwsh
         run: Import-Module ./GmodAddonTools.psd1 -Force -ErrorAction Stop
+
+      - name: LSP reader timeout regression
+        shell: pwsh
+        run: ./tests/lsp-read-timeout.ps1

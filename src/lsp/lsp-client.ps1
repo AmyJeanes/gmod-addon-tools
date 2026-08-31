@@ -26,12 +26,34 @@ function Write-LspFrame($stream, $obj) {
     $stream.Flush()
 }
 
-function Read-LspFrame($stream) {
+# Per-read timeout for the synchronous reader. A pipe read has no CanTimeout, so a
+# wedged or never-replying server would otherwise block ReadByte() forever - this bounds
+# it. Generous by design: a legit reply lands in milliseconds, and an unindexed server
+# still answers each hover promptly with an error (which the retry loop handles), so this
+# never trips on a slow index - only on a genuine transport wedge. Overridable for odd
+# environments via GMOD_LSP_READ_TIMEOUT_MS.
+$script:LspReadTimeoutMs = if ($env:GMOD_LSP_READ_TIMEOUT_MS -as [int]) { [int]$env:GMOD_LSP_READ_TIMEOUT_MS } else { 30000 }
+
+# Bounded read: like Stream.Read, but abandons and throws if no data arrives within
+# $timeoutMs. A pipe read can only be cancelled by tearing the process down, so a timeout
+# here is terminal - the caller stops the server. The abandoned ReadAsync keeps the passed
+# buffer, so callers must discard it (never reuse the stream) after a timeout.
+function Read-LspStreamTimed($stream, [byte[]]$buffer, [int]$offset, [int]$count, [int]$timeoutMs) {
+    $task = $stream.ReadAsync($buffer, $offset, $count)
+    if (-not $task.Wait($timeoutMs)) {
+        throw [System.TimeoutException]::new("glua_ls did not respond within ${timeoutMs}ms (LSP read timed out).")
+    }
+    return $task.Result
+}
+
+function Read-LspFrame($stream, [int]$timeoutMs = 0) {
+    if ($timeoutMs -le 0) { $timeoutMs = $script:LspReadTimeoutMs }
+    $one = [byte[]]::new(1)
     $hdr = [System.Collections.Generic.List[byte]]::new()
     while ($true) {
-        $b = $stream.ReadByte()
-        if ($b -lt 0) { return $null }
-        $hdr.Add([byte]$b)
+        $n = Read-LspStreamTimed $stream $one 0 1 $timeoutMs
+        if ($n -le 0) { return $null }   # EOF: server closed stdout
+        $hdr.Add($one[0])
         $c = $hdr.Count
         if ($c -ge 4 -and $hdr[$c - 4] -eq 13 -and $hdr[$c - 3] -eq 10 -and $hdr[$c - 2] -eq 13 -and $hdr[$c - 1] -eq 10) { break }
     }
@@ -44,7 +66,7 @@ function Read-LspFrame($stream) {
     $buf = [byte[]]::new($len)
     $off = 0
     while ($off -lt $len) {
-        $r = $stream.Read($buf, $off, $len - $off)
+        $r = Read-LspStreamTimed $stream $buf $off ($len - $off) $timeoutMs
         if ($r -le 0) { break }
         $off += $r
     }
@@ -60,7 +82,7 @@ function Invoke-LspRequest($server, [string]$method, $params) {
     $server.NextId = $id + 1
     Write-LspFrame $server.In @{ jsonrpc = '2.0'; id = $id; method = $method; params = $params }
     while ($true) {
-        $raw = Read-LspFrame $server.Out
+        $raw = Read-LspFrame $server.Out $server.ReadTimeoutMs
         if ($null -eq $raw) { return $null }
         if ($raw -eq '') { continue }
         $msg = $raw | ConvertFrom-Json
@@ -94,10 +116,11 @@ function Start-LspServer([string]$exePath, [string]$rootPath) {
     $proc = [System.Diagnostics.Process]::Start($psi)
 
     $server = [pscustomobject]@{
-        Process = $proc
-        In      = $proc.StandardInput.BaseStream
-        Out     = $proc.StandardOutput.BaseStream
-        NextId  = 1
+        Process        = $proc
+        In             = $proc.StandardInput.BaseStream
+        Out            = $proc.StandardOutput.BaseStream
+        NextId         = 1
+        ReadTimeoutMs  = $script:LspReadTimeoutMs
     }
 
     $rootUri = ConvertTo-FileUri $rootPath
@@ -123,6 +146,8 @@ function Open-LspDocument($server, [string]$filePath) {
 }
 
 function Stop-LspServer($server) {
+    # We Kill() regardless, so don't wait the full read timeout on a wedged shutdown reply.
+    $server.ReadTimeoutMs = 3000
     try {
         $null = Invoke-LspRequest $server 'shutdown' $null
         Send-LspNotification $server 'exit' $null
