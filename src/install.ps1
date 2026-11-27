@@ -8,7 +8,7 @@
 # Renovate (renovate.json customManagers) bumps these on upstream releases.
 # Releases: https://github.com/Pollux12/gmod-glua-ls/releases
 # renovate: datasource=github-releases depName=Pollux12/gmod-glua-ls
-$GluaLsVersion  = '1.4.2'
+$GluaLsVersion  = '1.4.4'
 # Annotations: https://github.com/Pollux12/annotations-gmod-glua-ls - published to
 # branches, not releases; gluals-annotations-prerelease is the beta channel paired
 # with the analyzer's annotation-driven system. Pinned by commit sha of that branch;
